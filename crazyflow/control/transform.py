@@ -13,6 +13,43 @@ if TYPE_CHECKING:
     from crazyflow._typing import Array  # To be changed to array_api_typing later
 
 
+def quat_to_rot_mat(quat: Array) -> Array:
+    """Body -> world rotation matrix from a scalar-last (x, y, z, w) quaternion.
+
+    Batched over arbitrary leading dims: quat (..., 4) -> matrix (..., 3, 3).
+    Equivalent to scipy.spatial.transform.Rotation.from_quat(quat).as_matrix(),
+    but written purely in terms of array_api_compat's xp so it stays
+    jit/vmap/scan-compatible on jax (scipy's Rotation materializes its input
+    via __array__(), which fails on a jax tracer during tracing).
+    """
+    xp = array_namespace(quat)
+    x, y, z, w = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+    row0 = xp.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], axis=-1)
+    row1 = xp.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], axis=-1)
+    row2 = xp.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], axis=-1)
+    return xp.stack([row0, row1, row2], axis=-2)
+
+
+def euler_xyz_to_rot_mat(rpy: Array) -> Array:
+    """Rotation matrix from extrinsic xyz Euler angles (roll, pitch, yaw), radians.
+
+    Batched over arbitrary leading dims: rpy (..., 3) -> matrix (..., 3, 3).
+    Equivalent to scipy.spatial.transform.Rotation.from_euler("xyz", rpy).
+    as_matrix() (Rz(yaw) @ Ry(pitch) @ Rx(roll), verified numerically against
+    scipy), but jit/vmap/scan-compatible -- see quat_to_rot_mat's docstring
+    for why scipy's Rotation can't be used directly here.
+    """
+    xp = array_namespace(rpy)
+    a, b, c = rpy[..., 0], rpy[..., 1], rpy[..., 2]
+    ca, sa = xp.cos(a), xp.sin(a)
+    cb, sb = xp.cos(b), xp.sin(b)
+    cc, sc = xp.cos(c), xp.sin(c)
+    row0 = xp.stack([cc * cb, cc * sb * sa - sc * ca, cc * sb * ca + sc * sa], axis=-1)
+    row1 = xp.stack([sc * cb, sc * sb * sa + cc * ca, sc * sb * ca - cc * sa], axis=-1)
+    row2 = xp.stack([-sb, cb * sa, cb * ca], axis=-1)
+    return xp.stack([row0, row1, row2], axis=-2)
+
+
 def motor_force2rotor_vel(motor_forces: Array, rpm2thrust: Array) -> Array:
     """Convert motor forces to rotor velocities, where f=a*rpm^2+b*rpm+c.
 

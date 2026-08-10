@@ -23,7 +23,6 @@ import jax.numpy as jnp
 from array_api_compat import array_namespace
 from array_api_compat import device as xp_device
 from flax.struct import dataclass
-from scipy.spatial.transform import Rotation as R
 
 import crazyflow.dynamics.symbols as symbols
 from crazyflow.dynamics.core import load_params, supports
@@ -35,6 +34,22 @@ if TYPE_CHECKING:
 
     from crazyflow._typing import Array  # To be changed to array_api_typing later
     from crazyflow.sim.data import SimData
+
+
+def quat_to_rot_mat(xp, quat: Array) -> Array:
+    """Body -> world rotation matrix from a scalar-last (x, y, z, w) quaternion.
+
+    Batched over arbitrary leading dims: quat (..., 4) -> matrix (..., 3, 3).
+    Equivalent to scipy.spatial.transform.Rotation.from_quat(quat).as_matrix(),
+    but written purely in terms of xp so it stays jit/vmap/scan-compatible on
+    jax (scipy's Rotation materializes its input via __array__(), which fails
+    on a jax tracer during tracing).
+    """
+    x, y, z, w = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+    row0 = xp.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], axis=-1)
+    row1 = xp.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], axis=-1)
+    row2 = xp.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], axis=-1)
+    return xp.stack([row0, row1, row2], axis=-2)
 
 
 @supports(rotor_dynamics=True)
@@ -105,8 +120,13 @@ def dynamics(
     rpm2torque, J, J_inv = to_xp(rpm2torque, J, J_inv, xp=xp, device=device)
     mixing_matrix, rotor_dyn_coef = to_xp(mixing_matrix, rotor_dyn_coef, xp=xp, device=device)
     drag_matrix = to_xp(drag_matrix, xp=xp, device=device)
-    rot = R.from_quat(quat)  # from body to world
-    rot_mat = rot.inv().as_matrix()  # from world to body
+    # scipy.spatial.transform.Rotation is not traceable under jax.jit/vmap/scan
+    # (it materializes its input via __array__(), which fails on a tracer) --
+    # quat_to_rot_mat below is the same body->world rotation matrix, written
+    # purely in terms of xp so it stays jit/vmap-compatible on both jax and
+    # numpy backends.
+    rot_mat_wb = quat_to_rot_mat(xp, quat)  # from body to world
+    rot_mat = rot_mat_wb.mT  # from world to body (inverse of a rotation matrix is its transpose)
     # Rotor dynamics
     if rotor_vel is None:
         warnings.warn("Rotor velocity not provided, using commanded rotor velocity.")
@@ -122,7 +142,7 @@ def dynamics(
     forces_motor_tot = xp.sum(forces_motor, axis=-1)
     zeros = xp.zeros_like(forces_motor_tot)
     forces_motor_vec = xp.stack((zeros, zeros, forces_motor_tot), axis=-1)
-    forces_motor_vec_world = rot.apply(forces_motor_vec)
+    forces_motor_vec_world = (rot_mat_wb @ forces_motor_vec[..., None])[..., 0]
     force_gravity = gravity_vec * mass
     force_drag = (rot_mat.mT @ (drag_matrix @ (rot_mat @ vel[..., None])))[..., 0]
 
@@ -159,7 +179,7 @@ def dynamics(
 
     # Rotational equation of motion
     if dist_t is not None:
-        torque_vec = torque_vec + rot.apply(dist_t, inverse=True)
+        torque_vec = torque_vec + (rot_mat @ dist_t[..., None])[..., 0]
     quat_dot = rotation.ang_vel2quat_dot(quat, ang_vel)
     torque_vec = torque_vec - xp.linalg.cross(ang_vel, (J @ ang_vel[..., None])[..., 0])
     ang_vel_dot = (J_inv @ torque_vec[..., None])[..., 0]

@@ -17,10 +17,15 @@ import array_api_extra as xpx
 import jax.numpy as jnp
 from array_api_compat import array_namespace
 from flax.struct import dataclass, field
-from scipy.spatial.transform import Rotation as R
 
 from crazyflow.control.core import controllable, load_params
-from crazyflow.control.transform import force2pwm, motor_force2rotor_vel, pwm2force
+from crazyflow.control.transform import (
+    euler_xyz_to_rot_mat,
+    force2pwm,
+    motor_force2rotor_vel,
+    pwm2force,
+    quat_to_rot_mat,
+)
 from crazyflow.utils import leaf_replace
 
 if TYPE_CHECKING:
@@ -200,12 +205,13 @@ def attitude2force_torque(
     rpy_des = cmd[..., :3]
     dt = 1 / ctrl_freq
     # l. 220 ff [eR]. We're using the "inefficient" code path from the firmware
-    rot = R.from_quat(quat)
-    rot_des = R.from_euler("xyz", rpy_des, degrees=False)
+    rot_mat = quat_to_rot_mat(quat)
+    rot_des_mat = euler_xyz_to_rot_mat(rpy_des)
     # Equivalent to eRM = R_des.T @ R_act - R_act.T @ R_des
     # Firmware does not multiply by 0.5 here, but the original paper does. We replicate the firmware
     # exactly to avoid sim2real issues with the original controller parameters.
-    R_delta = (rot_des.inv() * rot).as_matrix()
+    # (rot_des.inv() * rot).as_matrix() == rot_des.as_matrix().T @ rot.as_matrix()
+    R_delta = rot_des_mat.mT @ rot_mat
     eRM = R_delta - R_delta.mT
     # Vee operator (SO3 to R3)
     eR = xp.stack((eRM[..., 2, 1], eRM[..., 0, 2], eRM[..., 1, 0]), axis=-1)
