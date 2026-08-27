@@ -6,6 +6,7 @@ from scipy.spatial.transform import Rotation as R
 from crazyflow.control import Control, load_params, parametrize
 from crazyflow.control.mellinger import force_torque2rotor_vel, state2attitude
 from crazyflow.control.transform import motor_force2rotor_vel
+from crazyflow.exception import ConfigError
 from crazyflow.sim import Dynamics, Sim
 
 
@@ -72,6 +73,37 @@ def test_rotor_vel_interface():
     # Check if drone is not tilted
     assert R.from_quat(sim.data.states.quat[0, 0]).magnitude() < 0.1, "Drone is tilted"
     assert sim.data.states.pos[0, 0, 2] > 0.5, "Failed to accelerate with rotor velocity control"
+
+
+@pytest.mark.integration
+def test_body_rate_interface():
+    """A body-rate setpoint must be tracked in the body frame, on each axis independently."""
+    sim = Sim(dynamics=Dynamics.first_principles, control=Control.body_rate, freq=500)
+    mass = float(sim.data.params.mass[0, 0, 0])
+    sim.data = sim.data.replace(
+        states=sim.data.states.replace(pos=sim.data.states.pos.at[..., 2].set(2.0))
+    )
+    # The rotors start at zero RPM, so spin them up to hover before commanding a rate
+    hover = np.zeros((1, 1, 4), dtype=np.float32)
+    hover[0, 0, 3] = mass * 9.81
+    sim.body_rate_control(hover)
+    sim.step(sim.freq)
+
+    target = np.array([1.0, -1.5, 2.0])
+    cmd = hover.copy()
+    cmd[0, 0, :3] = target
+    sim.body_rate_control(cmd)
+    sim.step(sim.freq // 2)  # Half a second, well past the settling time
+
+    ang_vel = np.asarray(sim.data.states.ang_vel[0, 0])
+    assert np.allclose(ang_vel, target, atol=0.15), f"Body rates {ang_vel} do not track {target}"
+
+
+@pytest.mark.integration
+def test_body_rate_requires_first_principles():
+    for dynamics in (Dynamics.so_rpy, Dynamics.so_rpy_rotor, Dynamics.so_rpy_rotor_drag):
+        with pytest.raises(ConfigError):
+            Sim(dynamics=dynamics, control=Control.body_rate)
 
 
 @pytest.mark.integration

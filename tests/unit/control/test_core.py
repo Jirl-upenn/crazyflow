@@ -7,6 +7,7 @@ import array_api_strict
 import pytest
 
 from crazyflow.control import load_params, parametrize
+from crazyflow.control.body_rate import body_rate2force_torque
 from crazyflow.control.mellinger import (
     attitude2force_torque,
     force_torque2rotor_vel,
@@ -15,10 +16,11 @@ from crazyflow.control.mellinger import (
 from crazyflow.drones import available_drones
 
 _MELLINGER_FNS = [state2attitude, attitude2force_torque, force_torque2rotor_vel]
+_CONTROLLER_FNS = _MELLINGER_FNS + [body_rate2force_torque]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("fn", _MELLINGER_FNS, ids=lambda fn: fn.__name__)
+@pytest.mark.parametrize("fn", _CONTROLLER_FNS, ids=lambda fn: fn.__name__)
 @pytest.mark.parametrize("drone", available_drones)
 def test_load_params_keys(fn: Callable[..., Any], drone: str) -> None:
     params = load_params(fn, drone)
@@ -43,5 +45,13 @@ def test_parametrize_unknown_drone() -> None:
 @pytest.mark.parametrize("drone", available_drones)
 def test_parametrize_xp_namespace(drone: str) -> None:
     controller = parametrize(state2attitude, drone, xp=array_api_strict)
+    xp_array_type = type(array_api_strict.asarray(0.0))
+    assert all(isinstance(v, xp_array_type) for v in controller.keywords.values())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("drone", available_drones)
+def test_body_rate_parametrize_xp_namespace(drone: str) -> None:
+    controller = parametrize(body_rate2force_torque, drone, xp=array_api_strict)
     xp_array_type = type(array_api_strict.asarray(0.0))
     assert all(isinstance(v, xp_array_type) for v in controller.keywords.values())

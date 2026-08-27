@@ -38,6 +38,15 @@ def action_space(control_type: Control, drone: str) -> spaces.Box:
                 np.array([-np.pi / 2, -np.pi / 2, -np.pi / 2, thrust_min], dtype=np.float32),
                 np.array([np.pi / 2, np.pi / 2, np.pi / 2, thrust_max], dtype=np.float32),
             )
+        case Control.body_rate:
+            params = load_params(drone)
+            thrust_min, thrust_max = params["thrust_min"] * 4, params["thrust_max"] * 4
+            # Body-rate limits chosen to stay inside the torque the mixer can deliver at hover.
+            rate_max_rp, rate_max_y = np.pi, 2 * np.pi
+            return spaces.Box(
+                np.array([-rate_max_rp, -rate_max_rp, -rate_max_y, thrust_min], dtype=np.float32),
+                np.array([rate_max_rp, rate_max_rp, rate_max_y, thrust_max], dtype=np.float32),
+            )
         case Control.force_torque:
             return spaces.Box(-1.0, 1.0, shape=(6,))
         case _:
@@ -135,6 +144,8 @@ class DroneEnv(VectorEnv):
                 raise NotImplementedError("State control currently not supported")
             case Control.attitude:
                 self.sim.attitude_control(action)
+            case Control.body_rate:
+                self.sim.body_rate_control(action)
             case Control.force_torque:
                 self.sim.force_torque_control(action)
             case _:

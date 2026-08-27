@@ -1,6 +1,6 @@
 # Control Modes
 
-Crazyflow provides four levels of control abstraction, from high-level position setpoints down to direct motor commands. Each level is a separate control mode selected at construction time.
+Crazyflow provides five levels of control abstraction, from high-level position setpoints down to direct motor commands. Each level is a separate control mode selected at construction time.
 
 ## Control hierarchy
 
@@ -14,9 +14,15 @@ State (13D)
                  └─ Force/torque (4D: Fc, Tx, Ty, Tz)
                       └─ Mixer
                            └─ Rotor velocities (4D: ω₁…ω₄)
+
+Body rate (4D: ωx, ωy, ωz, thrust)
+  └─ CTBR rate controller
+       └─ Force/torque (4D: Fc, Tx, Ty, Tz)  ← rejoins the chain above
 ```
 
 When you select `Control.state`, the full chain runs on every control tick. When you select `Control.attitude`, only the lower two stages run.
+
+`Control.body_rate` is a second entry point rather than a rung on the same ladder. It is a sibling of the attitude stage: both consume a setpoint and produce force/torque, so they share the mixer below them, but a rate setpoint never passes through the attitude controller.
 
 ## State control
 
@@ -94,6 +100,44 @@ sim.attitude_control(cmd)
 sim.step(sim.freq // sim.control_freq)
 ```
 
+## Body-rate control
+
+Collective thrust and body rates (CTBR), the usual action interface for reinforcement learning: a rate setpoint is much easier to learn than a torque and transfers far better than a motor command. Requires `Dynamics.first_principles`.
+
+Command shape: `(n_worlds, n_drones, 4)`
+
+| Index | Variable | Units |
+|---|---|---|
+| 0 | Body roll rate \(\omega_x\) | rad/s |
+| 1 | Body pitch rate \(\omega_y\) | rad/s |
+| 2 | Body yaw rate \(\omega_z\) | rad/s |
+| 3 | Collective thrust | N |
+
+Unlike the Mellinger stages, this controller is not a reimplementation of the onboard firmware. It is a PID loop on the body rates that works entirely in SI units, with the derivative taken on the measurement rather than on the error so that stepping the setpoint produces no derivative kick. Gains are angular accelerations per unit rate error, and the commanded torque is `J @ (kp e + ki ∫e - kd dω/dt)`. Multiplying by the inertia last is what keeps the gains roughly platform independent.
+
+The torque is clipped to what the mixer can actually deliver, and the integrator freezes while an axis is saturated, so a stalled drone does not wind up a charge it has to pay back later.
+
+```python
+import numpy as np
+from crazyflow.sim import Sim
+from crazyflow.control import Control
+
+sim = Sim(control=Control.body_rate, body_rate_freq=500)
+sim.reset()
+
+mass = float(sim.data.params.mass[0, 0, 0])
+cmd = np.zeros((1, 1, 4), dtype=np.float32)
+cmd[0, 0, 3] = mass * 9.81
+cmd[0, 0, 0] = 1.0  # Roll right at 1 rad/s
+
+sim.body_rate_control(cmd)
+sim.step(sim.freq // sim.control_freq)
+```
+
+!!! warning "Spin the rotors up before commanding a rate"
+
+    The simulation resets with `rotor_vel` at zero. A rate step applied straight after `reset` measures the rotors accelerating from standstill, not the rate loop, and takes several times longer to settle than it should. Hold zero rates at hover thrust for about a second first.
+
 ## Force-torque control
 
 Direct force and torque input. Requires `Dynamics.first_principles`.
@@ -157,6 +201,7 @@ Each control mode has its own update rate. The dynamics tick (`freq`) is always 
 |---|---|---|
 | `state` | `state_freq` | 100 Hz |
 | `attitude` | `attitude_freq` | 500 Hz |
+| `body_rate` | `body_rate_freq` | 500 Hz |
 | `force_torque` | `force_torque_freq` | 500 Hz |
 | `rotor_vel` | — | every dynamics step |
 

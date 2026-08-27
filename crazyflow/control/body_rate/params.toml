@@ -1,0 +1,101 @@
+# Parameters for the CTBR body-rate controller.
+#
+# `J` is duplicated from crazyflow/drones/params.toml on purpose. It is the inertia the *controller*
+# assumes, not the inertia the dynamics integrate, and keeping the two separate is what makes it
+# possible to mismatch them deliberately (domain randomization, sim2real studies). Do not unify
+# them, for the same reason crazyflow/control/mellinger/params.toml is not unified with the drone
+# parameters.
+#
+# The gains are angular accelerations per unit rate error, so `J` restores physical torque units at
+# the end of the controller. That is what lets one set of gains serve every drone below: the inertia
+# cancels, and what is left is a demanded angular acceleration. Note that `kp = 250` is a *demand*
+# of 250 rad/s per rad/s of error, not an achieved bandwidth -- the mixer saturates long before
+# that, and the closed loop settles in 60-130 ms rather than the ~4 ms the gain alone would imply.
+#
+# `torque_max` is the largest body torque the mixer can actually deliver, computed from the arm
+# length, the thrust2torque constant, and the per-motor thrust range:
+#   tau_rp = L * 2 * (thrust_max - thrust_min), tau_yaw = thrust2torque * 2 * (thrust_max - thrust_min)
+# Clipping here rather than letting force_torque2rotor_vel clip the motor forces means a saturated
+# command keeps the requested torque *direction* instead of being silently distorted.
+#
+# The gains come from the CTBR loop in the agile_dev Isaac Lab environment, retuned where that
+# platform's actuator model differs from crazyflow's. `kp` is unchanged at 250. `ki` is 200 rather
+# than 500 and `kd` is 6.0 rather than 2.5, because crazyflow's fitted rotor dynamics are far slower
+# than the 5 ms first-order motor lag that environment assumes (`rotor_dyn_coef` works out to a
+# ~60 ms time constant on cf21B_500 and ~135 ms on cf2x_L250). More derivative damping and a less
+# aggressive integrator are what that extra actuator phase lag buys. Measured roll/pitch step
+# response to 1.745 rad/s from settled hover, at 500 Hz:
+#
+#   drone       overshoot  5% settling      with the unretuned ki=500, kd=2.5
+#   cf21B_500        2.3%       0.060 s        28.5% / 0.078 s
+#   cf2x_L250       10.3%       0.130 s        44.9% / 0.242 s
+#
+# Note that `kd` is only conditionally stable: it relies on the actuator lag to roll off the
+# one-step backward difference it takes. Driving the rigid body from this controller with no
+# actuator model at all diverges at any kd above ~1. That is not a case the simulation can reach --
+# body_rate requires first principles dynamics, which always models the rotors -- but it does mean
+# these gains are not a sensible starting point for a plant with much faster actuators.
+#
+# `int_err_max` is loose relative to what the platform can produce: reaching it requires many
+# seconds of fully saturated rate error. It exists to bound windup during a sustained stall (a
+# collision, a drone pinned against geometry), not to shape the nominal response.
+
+[cf2x_L250]
+[cf2x_L250.core]
+J = [
+    [16.8e-6, 0.0, 0.0],
+    [0.0, 16.8e-6, 0.0],
+    [0.0, 0.0, 29.8e-6]
+]
+
+[cf2x_L250.body_rate2force_torque]
+kp = [250.0, 250.0, 120.0]
+ki = [200.0, 200.0, 16.7]
+kd = [6.0, 6.0, 0.0]
+int_err_max = [33.3, 33.3, 166.7]
+torque_max = [0.00697328835, 0.00697328835, 0.001575766564]
+
+[cf2x_P250]
+[cf2x_P250.core]
+J = [  # From L250, as in drones/params.toml
+    [16.8e-6, 0.0, 0.0],
+    [0.0, 16.8e-6, 0.0],
+    [0.0, 0.0, 29.8e-6]
+]
+
+[cf2x_P250.body_rate2force_torque]
+kp = [250.0, 250.0, 120.0]
+ki = [200.0, 200.0, 16.7]
+kd = [6.0, 6.0, 0.0]
+int_err_max = [33.3, 33.3, 166.7]
+torque_max = [0.00697328835, 0.00697328835, 0.001499030819]
+
+[cf2x_T350]
+[cf2x_T350.core]
+J = [
+    [15.7e-6, 0.0, 0.0],
+    [0.0, 17.1e-6, 0.0],
+    [0.0, 0.0, 30.0e-6]
+]
+
+[cf2x_T350.body_rate2force_torque]
+kp = [250.0, 250.0, 120.0]
+ki = [200.0, 200.0, 16.7]
+kd = [6.0, 6.0, 0.0]
+int_err_max = [33.3, 33.3, 166.7]
+torque_max = [0.01045993252, 0.01045993252, 0.001722204204]
+
+[cf21B_500]
+[cf21B_500.core]
+J = [
+    [25e-6, 0.0,   0.0],
+    [0.0,   28e-6, 0.0],
+    [0.0,   0.0,   49e-6]
+]
+
+[cf21B_500.body_rate2force_torque]
+kp = [250.0, 250.0, 120.0]
+ki = [200.0, 200.0, 16.7]
+kd = [6.0, 6.0, 0.0]
+int_err_max = [33.3, 33.3, 166.7]
+torque_max = [0.01263144839, 0.01263144839, 0.00212183107]

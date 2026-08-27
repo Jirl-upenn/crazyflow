@@ -43,6 +43,25 @@ def attitude_control(data: SimData, controls: Array) -> SimData:
     return data
 
 
+def body_rate_control(data: SimData, controls: Array) -> SimData:
+    """Body-rate (CTBR) control function.
+
+    Like :func:`attitude_control`, the command is staged rather than applied directly, so that the
+    body-rate controller sees a new setpoint only on its own control tick instead of at the
+    dynamics update rate.
+    """
+    assert data.controls.mode == Control.body_rate, (
+        f"control type {data.controls.mode} not enabled"
+    )
+    assert controls.shape == (data.core.n_worlds, data.core.n_drones, 4), "controls shape mismatch"
+    controls = to_device(controls, data.core.device)
+    return data.replace(
+        controls=data.controls.replace(
+            body_rate=data.controls.body_rate.replace(staged_cmd=controls)
+        )
+    )
+
+
 def force_torque_control(data: SimData, controls: Array) -> SimData:
     """Force-torque control function."""
     assert data.controls.mode == Control.force_torque, (
@@ -77,6 +96,8 @@ def controllable(data: SimData) -> Array:
             control_steps, control_freq = controls.state.steps, controls.state.freq
         case Control.attitude:
             control_steps, control_freq = controls.attitude.steps, controls.attitude.freq
+        case Control.body_rate:
+            control_steps, control_freq = controls.body_rate.steps, controls.body_rate.freq
         case Control.force_torque:
             control_steps = controls.force_torque.steps
             control_freq = controls.force_torque.freq

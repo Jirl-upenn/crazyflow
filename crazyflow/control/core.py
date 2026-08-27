@@ -106,6 +106,14 @@ class Control(str, Enum):
     Note:
         Recommended frequency is >=500 Hz.
     """
+    body_rate = "body_rate"
+    """Body-rate (CTBR) control takes [roll_rate, pitch_rate, yaw_rate, collective thrust].
+
+    Rates are in the body frame in rad/s, thrust in N. Requires first principles dynamics.
+
+    Note:
+        Recommended frequency is >=100 Hz. The loop degrades sharply below that.
+    """
     rotor_vel = "rotor_vel"
     """Rotor velocity control takes [w1, w2, w3, w4] in RPMs.
 

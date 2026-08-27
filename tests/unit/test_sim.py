@@ -16,7 +16,7 @@ from crazyflow.control import Control
 from crazyflow.exception import ConfigError
 from crazyflow.sim import Dynamics, Sim
 from crazyflow.sim.data import ControlData, SimData
-from crazyflow.sim.sim import sync_sim2mjx, use_box_collision
+from crazyflow.sim.sim import FIRST_PRINCIPLES_ONLY_CONTROL, sync_sim2mjx, use_box_collision
 from crazyflow.sim.visualize import change_material
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ def test_sim_init(dynamics: Dynamics, device: str, control: Control, n_worlds: i
     n_drones = 1
 
     if dynamics != Dynamics.first_principles:
-        if control in (Control.force_torque, Control.rotor_vel):
+        if control in FIRST_PRINCIPLES_ONLY_CONTROL:
             with pytest.raises(ConfigError):
                 Sim(n_worlds=n_worlds, dynamics=dynamics, device=device, control=control)
             return
@@ -89,8 +89,16 @@ def test_sim_init(dynamics: Dynamics, device: str, control: Control, n_worlds: i
     else:
         assert sim.data.controls.attitude is None
 
+    # Test body rate buffer shapes
+    if control == Control.body_rate:
+        assert isinstance(sim.data.controls.body_rate, ControlData)
+        array_meta_assert(sim.data.controls.body_rate.staged_cmd, (n_worlds, n_drones, 4), device)
+        array_meta_assert(sim.data.controls.body_rate.cmd, (n_worlds, n_drones, 4), device)
+    else:
+        assert sim.data.controls.body_rate is None
+
     # Test force torque buffer shapes
-    if control in (Control.state, Control.attitude, Control.force_torque):
+    if control in (Control.state, Control.attitude, Control.body_rate, Control.force_torque):
         ft_ctrl = sim.data.controls.force_torque
         assert isinstance(ft_ctrl, ControlData)
         array_meta_assert(ft_ctrl.cmd, (n_worlds, n_drones, 4), device)
@@ -186,7 +194,7 @@ def test_reset_masked(device: str, dynamics: Dynamics):
 @pytest.mark.parametrize("control", Control)
 def test_sim_step(n_worlds: int, n_drones: int, dynamics: Dynamics, control: Control, device: str):
     if dynamics != Dynamics.first_principles:
-        if control in (Control.force_torque, Control.rotor_vel):
+        if control in FIRST_PRINCIPLES_ONLY_CONTROL:
             pytest.skip(f"{control} is not supported with non-first-principles dynamics")
 
     sim = Sim(

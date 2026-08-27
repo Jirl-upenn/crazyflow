@@ -41,6 +41,25 @@ Use pixi, not uv. `pixi run <cmd>` resolves task names only, so arbitrary comman
 - Request the `device` fixture rather than a GPU marker. It falls back to CPU silently, so
   `gpu-tests` asserts nothing about placement on a machine without CUDA.
 
+## Control
+
+`Control.body_rate` (CTBR) is a second entry point into the cascade, not a rung on it. It is a
+sibling of the Mellinger attitude stage: both emit force/torque into the shared mixer, so a rate
+setpoint never passes through the attitude controller. Like `force_torque` and `rotor_vel` it needs
+first principles dynamics. `crazyflow.sim.sim.FIRST_PRINCIPLES_ONLY_CONTROL` is the set, and the
+tests import it rather than repeating the tuple.
+
+**`reset` leaves `rotor_vel` at zero.** A step response commanded straight after `reset` measures
+the rotors spinning up from standstill, not the loop under test: the drone has almost no control
+authority until they reach hover, which takes several hundred milliseconds and inflates settling
+times by 3-5x. Hold hover thrust for about a second first. This bites any characterisation of the
+inner loop, not just the body-rate controller.
+
+Controller gains ported from another simulator do not carry over unexamined, because the actuator
+model is part of the loop. crazyflow's fitted `rotor_dyn_coef` works out to a ~60 ms time constant
+on cf21B_500 and ~135 ms on cf2x_L250, far slower than the single-pole motor lag most Isaac/PyBullet
+environments assume, and a derivative gain tuned against the faster actuator is unstable without it.
+
 ## Adding a dynamics model or drone
 
 Grepping the name of an existing model or drone finds every registration site, except when matching

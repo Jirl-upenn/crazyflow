@@ -74,3 +74,25 @@ def test_force_torque_cmd_gradients():
 
     grad = step_grad(cmd, sim.data)
     assert not jnp.any(jnp.isnan(grad))
+
+
+@pytest.mark.unit
+def test_body_rate_cmd_gradients():
+    sim = Sim(dynamics=Dynamics.first_principles, control=Control.body_rate, freq=500)
+
+    def step(cmd: Array, data: SimData) -> Array:
+        data = data.replace(
+            controls=data.controls.replace(
+                body_rate=data.controls.body_rate.replace(staged_cmd=cmd)
+            )
+        )
+        data = sim._step(data, 10)
+        return (data.states.pos[0, 0, 2] - 1.0) ** 2  # Quadratic cost to reach 1m height
+
+    step_grad = jax.jit(jax.grad(step))
+
+    cmd = jnp.zeros((1, 1, 4), dtype=jnp.float32)
+    cmd = cmd.at[..., 3].set(0.3)  # Positive thrust, so the torque gate does not zero the gradient
+
+    grad = step_grad(cmd, sim.data)
+    assert not jnp.any(jnp.isnan(grad))
