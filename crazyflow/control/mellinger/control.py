@@ -239,7 +239,27 @@ def attitude2force_torque(
     torque_pwm = xp.where((force_des > 0)[..., None], torque_pwm, 0.0)
     force_des_pwm = force2pwm(force_des / 4, thrust_max, pwm_max)
     pwms = force_torque_pwms2pwms(force_des_pwm, torque_pwm, mixing_matrix)
-    pwms = xp.where(xp.all(pwms == 0), 0.0, xp.clip(pwms, pwm_min, pwm_max))
+    # Saturate the way the DEPLOYED firmware does, not the legacy way. A
+    # per-motor independent clip (what this used to be, and what the old
+    # limitThrust power distribution did) compresses the DIFFERENCES between
+    # the four commands, so it sheds torque and keeps collective thrust.
+    # powerDistributionCap in power_distribution_quadrotor.c does the
+    # opposite: it finds the single largest overshoot and subtracts it from
+    # all four, which preserves the differences -- torque and attitude
+    # authority survive, and collective thrust is what is given up.
+    #
+    # The two disagree exactly when it matters. In flight the limit is hit
+    # differentially, not collectively: on hardware EXACTLY ONE of four motors
+    # is pinned in 17-27% of control samples while the collective sits near
+    # 55% of ceiling, and an MJX rollout of the same weights reproduces that
+    # signature (17.1% of samples, one motor in 99.2% of them). Under the old
+    # clip that regime silently costs attitude authority in sim and collective
+    # thrust on the vehicle, so a policy learns the wrong recovery for it.
+    #
+    # The all-zero guard is unchanged and still reads the PRE-reduction pwms:
+    # it is the motors-off case (force_des <= 0), not a saturation case.
+    reduction = xp.maximum(xp.max(pwms, axis=-1, keepdims=True) - pwm_max, 0.0)
+    pwms = xp.where(xp.all(pwms == 0), 0.0, xp.clip(pwms - reduction, pwm_min, pwm_max))
 
     # Info: The Mellinger controller in the firmware ends here. However, we enforce a standardized
     # interface in the simulation from states -> attitude -> force_torque. We therefore need this
