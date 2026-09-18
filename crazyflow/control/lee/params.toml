@@ -1,0 +1,74 @@
+# Lee geometric controller gains, copied from the firmware defaults in
+# src/modules/src/controller/controller_lee.c (g_self). All SI: KR in N m/rad, Komega in N m s/rad,
+# KI in N m/(rad s), J in kg m^2 (diagonal; Foerster, ETH BA thesis), mass in kg. The firmware ships
+# one gain set for every platform, so every drone gets the same values here. Kpos_* are the
+# position-stage gains (acceleration domain, 1/s^2 and 1/s); they are unused by the attitude stage
+# and kept for the position stage (state2force_torque) once it exists.
+
+[cf2x_L250]
+[cf2x_L250.core]
+mass = 0.029
+J = [16.571710e-6, 16.655602e-6, 29.261652e-6]
+
+[cf2x_L250.attitude2force_torque]
+KR = [0.007, 0.007, 0.008]
+Komega = [0.00115, 0.00115, 0.002]
+KI = [0.03, 0.03, 0.03]
+
+[cf2x_L250.state2force_torque]
+Kpos_P = [7.0, 7.0, 7.0]
+Kpos_D = [4.0, 4.0, 4.0]
+Kpos_I = [0.0, 0.0, 0.0]
+Kpos_P_limit = 100.0
+Kpos_D_limit = 100.0
+
+[cf2x_P250]
+[cf2x_P250.core]
+mass = 0.029
+J = [16.571710e-6, 16.655602e-6, 29.261652e-6]
+
+[cf2x_P250.attitude2force_torque]
+KR = [0.007, 0.007, 0.008]
+Komega = [0.00115, 0.00115, 0.002]
+KI = [0.03, 0.03, 0.03]
+
+[cf2x_P250.state2force_torque]
+Kpos_P = [7.0, 7.0, 7.0]
+Kpos_D = [4.0, 4.0, 4.0]
+Kpos_I = [0.0, 0.0, 0.0]
+Kpos_P_limit = 100.0
+Kpos_D_limit = 100.0
+
+[cf2x_T350]
+[cf2x_T350.core]
+mass = 0.029
+J = [16.571710e-6, 16.655602e-6, 29.261652e-6]
+
+[cf2x_T350.attitude2force_torque]
+KR = [0.007, 0.007, 0.008]
+Komega = [0.00115, 0.00115, 0.002]
+KI = [0.03, 0.03, 0.03]
+
+[cf2x_T350.state2force_torque]
+Kpos_P = [7.0, 7.0, 7.0]
+Kpos_D = [4.0, 4.0, 4.0]
+Kpos_I = [0.0, 0.0, 0.0]
+Kpos_P_limit = 100.0
+Kpos_D_limit = 100.0
+
+[cf21B_500]
+[cf21B_500.core]
+mass = 0.029
+J = [16.571710e-6, 16.655602e-6, 29.261652e-6]
+
+[cf21B_500.attitude2force_torque]
+KR = [0.007, 0.007, 0.008]
+Komega = [0.00115, 0.00115, 0.002]
+KI = [0.03, 0.03, 0.03]
+
+[cf21B_500.state2force_torque]
+Kpos_P = [7.0, 7.0, 7.0]
+Kpos_D = [4.0, 4.0, 4.0]
+Kpos_I = [0.0, 0.0, 0.0]
+Kpos_P_limit = 100.0
+Kpos_D_limit = 100.0

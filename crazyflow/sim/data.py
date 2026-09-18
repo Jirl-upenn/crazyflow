@@ -9,6 +9,7 @@ from jax import Array, Device
 
 from crazyflow.control import Control
 from crazyflow.control.body_rate import BodyRateData
+from crazyflow.control.lee import LeeAttitudeData
 from crazyflow.control.mellinger import (
     MellingerAttitudeData,
     MellingerForceTorqueData,
@@ -125,13 +126,19 @@ class SimControls:
         body_rate_freq: int | None,
         force_torque_freq: int | None,
         device: Device,
+        attitude_controller: str = "mellinger",
     ) -> SimControls:
-        """Create a default set of controls for the simulation."""
+        """Create a default set of controls for the simulation.
+
+        ``attitude_controller`` selects the implementation of the attitude stage ("mellinger" or
+        "lee"); both consume the same [roll, pitch, yaw, thrust] command.
+        """
         rotor_vel = jnp.zeros((n_worlds, n_drones, 4), device=device)
+        attitude_data = {"mellinger": MellingerAttitudeData, "lee": LeeAttitudeData}[attitude_controller]
         match control:
             case Control.state:
                 state = MellingerStateData.create(n_worlds, n_drones, state_freq, drone, device)
-                attitude = MellingerAttitudeData.create(
+                attitude = attitude_data.create(
                     n_worlds, n_drones, attitude_freq, drone, device
                 )
                 force_torque = MellingerForceTorqueData.create(
@@ -146,7 +153,7 @@ class SimControls:
                     rotor_vel=rotor_vel,
                 )
             case Control.attitude:
-                attitude = attitude = MellingerAttitudeData.create(
+                attitude = attitude_data.create(
                     n_worlds, n_drones, attitude_freq, drone, device
                 )
                 force_torque = MellingerForceTorqueData.create(

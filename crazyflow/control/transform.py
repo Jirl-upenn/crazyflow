@@ -50,6 +50,20 @@ def euler_xyz_to_rot_mat(rpy: Array) -> Array:
     return xp.stack([row0, row1, row2], axis=-2)
 
 
+def rot_mat_to_euler_xyz(rot_mat: Array) -> Array:
+    """Extrinsic xyz Euler angles (roll, pitch, yaw), radians, from a rotation matrix.
+
+    Inverse of ``euler_xyz_to_rot_mat``; equivalent to scipy's
+    ``Rotation.from_matrix(m).as_euler("xyz")`` away from the pitch = +-90 deg singularity.
+    Batched over arbitrary leading dims: matrix (..., 3, 3) -> rpy (..., 3).
+    """
+    xp = array_namespace(rot_mat)
+    roll = xp.atan2(rot_mat[..., 2, 1], rot_mat[..., 2, 2])
+    pitch = -xp.asin(xp.clip(rot_mat[..., 2, 0], -1.0, 1.0))
+    yaw = xp.atan2(rot_mat[..., 1, 0], rot_mat[..., 0, 0])
+    return xp.stack([roll, pitch, yaw], axis=-1)
+
+
 def motor_force2rotor_vel(motor_forces: Array, rpm2thrust: Array) -> Array:
     """Convert motor forces to rotor velocities, where f=a*rpm^2+b*rpm+c.
 

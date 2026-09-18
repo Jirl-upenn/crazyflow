@@ -25,6 +25,7 @@ from crazyflow.control.transform import (
     motor_force2rotor_vel,
     pwm2force,
     quat_to_rot_mat,
+    rot_mat_to_euler_xyz,
 )
 from crazyflow.utils import leaf_replace
 
@@ -106,7 +107,7 @@ def state2attitude(
     # => only one case here, since the setpoint is always in absolute mode
     desired_yaw = setpoint_yaw
     # l. 189 Z-Axis [zB]
-    rot = R.from_quat(quat).as_matrix()
+    rot = quat_to_rot_mat(quat)
     z_axis = rot[..., -1]  # 3rd column or roation matrix is z axis
     # l. 194 yaw correction (only if position control is not used)
     # => skipped since we always use position control here
@@ -136,7 +137,7 @@ def state2attitude(
     #
     # safety: assume_valid is okay here because we just constructed the rotation matrix from
     # orthonormal vectors
-    command_RPY = R.from_matrix(matrix, assume_valid=True).as_euler("xyz", degrees=False)
+    command_RPY = rot_mat_to_euler_xyz(matrix)
     # l. 283 [control_thrust]
     # The firmware returns thrust in PWM, but we want to stay in SI units. The conversion from
     # thrust to PWM uses a mass_thrust parameter, which is a constant converting thrust values to

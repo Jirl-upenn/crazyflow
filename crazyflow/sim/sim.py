@@ -23,6 +23,9 @@ from crazyflow.control.mellinger import (
     control_force_torque2rotor_vel,
     control_state2attitude,
 )
+from crazyflow.control.lee import (
+    control_attitude2force_torque as control_lee_attitude2force_torque,
+)
 from crazyflow.dynamics import Dynamics
 from crazyflow.dynamics.first_principles import sim_dynamics as first_principles_dynamics
 from crazyflow.dynamics.so_rpy import sim_dynamics as so_rpy_dynamics
@@ -94,6 +97,7 @@ class Sim:
         xml_path: Path | None = None,
         rng_key: int = 0,
         fused_mjx_model: bool = False,
+        attitude_controller: str = "mellinger",
     ):
         """Build the scene and the step and reset pipelines, and allocate the batched sim data.
 
@@ -115,6 +119,8 @@ class Sim:
             fused_mjx_model: If True, use the ``drone_fused`` body whose visual geometry is fused
                 into a single mesh. This shrinks the MJX model and reduces its memory footprint at
                 the cost of visual detail.
+            attitude_controller: Implementation of the attitude stage, ``"mellinger"`` (default) or
+                ``"lee"``. Only used by the state and attitude control modes.
         """
         assert Dynamics(dynamics) in Dynamics, f"Dynamics mode {dynamics} not implemented"
         assert Control(control) in Control, f"Control mode {control} not implemented"
@@ -125,6 +131,9 @@ class Sim:
             raise ConfigError("High frequency simulations require double precision mode")
         self.dynamics = dynamics
         self.control = control
+        if attitude_controller not in ("mellinger", "lee"):
+            raise ConfigError(f"Unknown attitude controller {attitude_controller!r}")
+        self.attitude_controller = attitude_controller
         self.drone = drone
         self.integrator = integrator
         self.device = jax.devices(device)[0]
@@ -156,7 +165,7 @@ class Sim:
         # The ``select_xxx_fn`` methods return functions, not the results of calling those
         # functions. They act as factories that produce building blocks for the construction of our
         # simulation pipeline.
-        for name, fn in build_control_fns(self.control, self.dynamics):
+        for name, fn in build_control_fns(self.control, self.dynamics, self.attitude_controller):
             append_fn(self.step_pipeline, fn, name=name)
         integrate_fn = select_integrate_fn(self.integrator, select_dynamics_fn(self.dynamics))
         append_fn(self.step_pipeline, integrate_fn, name="integration")
@@ -498,6 +507,7 @@ class Sim:
                 body_rate_freq,
                 force_torque_freq,
                 self.device,
+                attitude_controller=self.attitude_controller,
             ),
             params=SimParams.create(N, D, self.dynamics, self.drone, self.device),
             core=SimCore.create(self.freq, N, D, drone_mocap_ids, rng_key, self.device),
@@ -562,7 +572,7 @@ class Sim:
 
 
 def build_control_fns(
-    control: Control, dynamics: Dynamics
+    control: Control, dynamics: Dynamics, attitude_controller: str = "mellinger"
 ) -> tuple[tuple[str, Callable[[SimData], SimData]], ...]:
     """Select the named control stages for the given control mode.
 
@@ -571,7 +581,11 @@ def build_control_fns(
         the stable pipeline stage identifiers used to insert, replace, or remove stages.
     """
     state = ("state_controller", control_state2attitude)
-    attitude = ("attitude_controller", control_attitude2force_torque)
+    attitude_fn = {
+        "mellinger": control_attitude2force_torque,
+        "lee": control_lee_attitude2force_torque,
+    }[attitude_controller]
+    attitude = ("attitude_controller", attitude_fn)
     body_rate = ("body_rate_controller", control_body_rate2force_torque)
     force_torque = ("force_torque_controller", control_force_torque2rotor_vel)
     commit_attitude = ("commit_attitude", control_commit_attitude)
