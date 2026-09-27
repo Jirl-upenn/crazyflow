@@ -52,6 +52,7 @@ else:
     * [sim.sensors](crazyflow/sim/sensors/index.md)
     * [sim.sensors.depth](crazyflow/sim/sensors/depth.md)
     * [sim.sensors.splat](crazyflow/sim/sensors/splat.md)
+    * [sim.sensors.warp](crazyflow/sim/sensors/warp.md)
     * [sim.splat](crazyflow/sim/splat.md)
     * [sim.visualize](crazyflow/sim/visualize.md)
 * Dynamics
