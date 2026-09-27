@@ -12,7 +12,7 @@ This section is auto-generated from the Crazyflow source code using [mkdocstring
 | `crazyflow.sim.functional` | Pure functional control API for use inside `jax.jit` |
 | `crazyflow.dynamics` | `Dynamics` enum and dynamics implementations |
 | `crazyflow.sim.integration` | `Integrator` enum, Euler, RK4, and symplectic Euler |
-| `crazyflow.sim.sensors` | Raycast depth (`sensors.depth`) and gaussian splat RGB (`sensors.splat`) sensors |
+| `crazyflow.sim.sensors` | Raycast depth (`sensors.depth`), gaussian splat RGB (`sensors.splat`), and MuJoCo Warp RGB (`sensors.warp`) sensors |
 | `crazyflow.sim.splat` | Gaussian splat plugin: `attach_splats` and the web-based `SplatViewer` |
 | `crazyflow.control` | `Control` enum |
 | `crazyflow.control.mellinger` | Mellinger controller data and parameters |
