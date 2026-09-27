@@ -12,7 +12,7 @@ try:
 except ImportError:
     pass  # not running in a docs environment — nothing to generate
 else:
-    SKIP_PARTS = {"_typing", "__main__", "__pycache__"}
+    SKIP_PARTS = {"_typing", "_common", "__main__", "__pycache__"}
 
     for path in sorted(Path("crazyflow").rglob("*.py")):
         module_path = path.relative_to(".").with_suffix("")

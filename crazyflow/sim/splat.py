@@ -21,6 +21,7 @@ import numpy as np
 import splax
 from splax.viewer import Viewer
 
+from crazyflow.sim.sensors._common import requires_gpu  # noqa: F401  re-exported for compatibility
 from crazyflow.sim.sim import requires_mujoco_sync
 
 if TYPE_CHECKING:
@@ -58,18 +59,6 @@ def requires_splats(fn: Callable[Params, Return]) -> Callable[Params, Return]:
     def wrapper(sim: Sim, *args: Any, **kwargs: Any) -> Return:
         if not all(k in sim.data.plugins for k in SPLAT_KEYS):
             raise RuntimeError("No splats attached to this simulation, call attach_splats first")
-        return fn(sim, *args, **kwargs)
-
-    return wrapper
-
-
-def requires_gpu(fn: Callable[Params, Return]) -> Callable[Params, Return]:
-    """Decorator to ensure that the simulation is running on the GPU."""
-
-    @wraps(fn)
-    def wrapper(sim: Sim, *args: Any, **kwargs: Any) -> Return:
-        if sim.device.platform != "gpu":
-            raise RuntimeError("Gaussian splatting requires running on the GPU.")
         return fn(sim, *args, **kwargs)
 
     return wrapper
