@@ -23,9 +23,21 @@ requires_splax = pytest.mark.skipif(
 
 assert all((EXAMPLES_DIR / name).is_file() for name in REQUIRES_SPLAX), "stale REQUIRES_SPLAX entry"
 
+# Examples that render through the MuJoCo Warp ray tracer, which needs the warp extra and a GPU.
+REQUIRES_WARP = ("rendering/warp_camera.py",)
+
+requires_warp = pytest.mark.skipif(
+    importlib.util.find_spec("warp") is None or "gpu" not in available_backends(),
+    reason="requires the warp extra and a CUDA GPU",
+)
+
+assert all((EXAMPLES_DIR / name).is_file() for name in REQUIRES_WARP), "stale REQUIRES_WARP entry"
+
 example_scripts = []
 for path in sorted(EXAMPLES_DIR.rglob("*.py")):
-    marks = requires_splax if path.relative_to(EXAMPLES_DIR).as_posix() in REQUIRES_SPLAX else ()
+    name = path.relative_to(EXAMPLES_DIR).as_posix()
+    marks = requires_splax if name in REQUIRES_SPLAX else ()
+    marks = requires_warp if name in REQUIRES_WARP else marks
     # Parametrize over strings so that pytest prints readable ids. The test converts them back.
     example_scripts.append(pytest.param(str(path), marks=marks))
 
