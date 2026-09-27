@@ -39,6 +39,8 @@ requires-python = ">=3.11,<3.14" # MuJoCo has no wheels for python 14
 gpu = ["jax[cuda12]"]
 benchmark = ["fire", "matplotlib", "pandas", "pyinstrument"]
 splats = ["splax[viewer]>=0.1.0"]
+# mjx.render needs MuJoCo 3.11, whose warp extra pins the matching warp-lang
+warp = ["mujoco-mjx[warp]>=3.11.0"]
 
 [project.urls]
 Homepage = "https://github.com/learnsyslab/crazyflow"
@@ -159,6 +161,7 @@ crazyflow = { path = "./", editable = true }
 # splax requires CUDA jax, which has no osx-arm64 wheels, so splats are linux-only by default
 [tool.pixi.target.linux-64.pypi-dependencies]
 splax = { version = ">=0.1.0", extras = ["viewer"] }
+mujoco-mjx = { version = ">=3.11.0", extras = ["warp"] }
 
 [tool.pixi.feature.gpu]
 platforms = ["linux-64"]
