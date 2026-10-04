@@ -65,35 +65,30 @@ def test_derivative_has_no_kick_on_first_call():
 
 
 @pytest.mark.unit
-def test_torque_clipped_to_achievable_range():
+def test_torque_not_clipped():
+    """No torque-space clip: as in the firmware, a saturating demand reaches the mixer unclipped."""
     ctrl = parametrize(body_rate2force_torque, "cf21B_500")
-    torque_max = np.asarray(ctrl.keywords["torque_max"])
-    # A rate error far beyond anything the platform can serve
-    _, torque, _ = ctrl(np.zeros(3), np.array([500.0, -500.0, 500.0, 0.4]))
-    assert np.all(np.abs(torque) <= torque_max + 1e-12), "Torque exceeds the mixer's authority"
-    assert np.allclose(np.abs(torque), torque_max), "Saturated command must reach the limit"
+    err = np.array([500.0, -500.0, 500.0])
+    _, torque, _ = ctrl(np.zeros(3), np.array([*err, 0.4]))
+    J, kp, ki = (np.asarray(ctrl.keywords[k]) for k in ("J", "kp", "ki"))
+    expected = J @ (kp * err + ki * np.clip(err / 500, -1e9, 1e9))   # one step of integration at 500 Hz
+    assert np.allclose(torque, expected), f"Torque was altered: {torque} vs {expected}"
 
 
 @pytest.mark.unit
-def test_anti_windup_holds_integral_while_saturated():
-    """The integrator must not charge on an axis whose torque is already saturated."""
+def test_integral_bounded_by_int_err_max():
+    """A sustained saturating error charges the integrator up to int_err_max and no further."""
     ctrl = parametrize(body_rate2force_torque, "cf21B_500")
+    int_err_max = np.asarray(ctrl.keywords["int_err_max"])
     int_err = None
-    # A roll rate the platform can never serve saturates the torque on the first call already
-    saturating = np.array([500.0, 0.0, 0.0, 0.4])
-    for _ in range(50):
-        _, _, int_err = ctrl(np.zeros(3), saturating, ang_vel_err_i=int_err)
-    assert float(int_err[0]) == 0.0, f"Integral wound up while saturated: {int_err[0]}"
-
-    # Without anti-windup, plain clipped integration over the same 50 steps would have charged to
-    # the clip limit, which is what the controller has to avoid.
-    int_err_max = float(np.asarray(ctrl.keywords["int_err_max"])[0])
-    assert min(500.0 * 50 / 500, int_err_max) > 1.0, "Test would not have detected windup"
+    for _ in range(int(2 * int_err_max[0] / (500.0 / 500)) + 10):
+        _, _, int_err = ctrl(np.zeros(3), np.array([500.0, 0.0, 0.0, 0.4]), ang_vel_err_i=int_err)
+    assert np.isclose(float(int_err[0]), int_err_max[0]), f"Integral not bounded at int_err_max: {int_err}"
 
 
 @pytest.mark.unit
 def test_integral_charges_when_not_saturated():
-    """Anti-windup must not block ordinary integration on an unsaturated axis."""
+    """Ordinary integration: the integral accumulates err * dt."""
     ctrl = parametrize(body_rate2force_torque, "cf21B_500")
     int_err = None
     # A small error, well inside the torque the mixer can deliver
@@ -101,16 +96,6 @@ def test_integral_charges_when_not_saturated():
         _, _, int_err = ctrl(np.zeros(3), np.array([0.0, 0.0, 0.02, 0.4]), ang_vel_err_i=int_err)
     assert float(int_err[2]) > 0.0, f"Integral never charged: {int_err}"
     assert np.isclose(float(int_err[2]), 0.02 * 20 / 500), "Integral did not accumulate err * dt"
-
-
-@pytest.mark.unit
-def test_anti_windup_still_allows_unwinding():
-    """A charged integrator must discharge once the error reverses, even while saturated."""
-    ctrl = parametrize(body_rate2force_torque, "cf21B_500")
-    charged = np.array([0.0, 0.0, 0.5])  # Pre-charged integral on the yaw axis
-    # Saturating error in the opposite direction: the integral has to be free to come back down
-    _, _, int_err = ctrl(np.zeros(3), np.array([0.0, 0.0, -500.0, 0.4]), ang_vel_err_i=charged)
-    assert float(int_err[2]) < float(charged[2]), "Anti-windup trapped the integral while saturated"
 
 
 @pytest.mark.unit

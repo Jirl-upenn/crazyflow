@@ -12,11 +12,11 @@
 # of 250 rad/s per rad/s of error, not an achieved bandwidth -- the mixer saturates long before
 # that, and the closed loop settles in 60-130 ms rather than the ~4 ms the gain alone would imply.
 #
-# `torque_max` is the largest body torque the mixer can actually deliver, computed from the arm
-# length, the thrust2torque constant, and the per-motor thrust range:
-#   tau_rp = L * 2 * (thrust_max - thrust_min), tau_yaw = thrust2torque * 2 * (thrust_max - thrust_min)
-# Clipping here rather than letting force_torque2rotor_vel clip the motor forces means a saturated
-# command keeps the requested torque *direction* instead of being silently distorted.
+# There is no torque limit here: as in the Crazyflie firmware, saturation happens only in
+# force_torque2rotor_vel's per-motor force clip. (A direction-preserving torque clamp with conditional
+# anti-windup was removed on 4 Oct 2026: it has no firmware counterpart, gave no learning benefit in a
+# 3-seed ablation, and policies trained with it lose half to nearly all of their performance under
+# firmware-style saturation and vice versa.)
 #
 # The gains come from the CTBR loop in the agile_dev Isaac Lab environment, retuned where that
 # platform's actuator model differs from crazyflow's. `kp` is unchanged at 250. `ki` is 200 rather
@@ -24,11 +24,12 @@
 # than the 5 ms first-order motor lag that environment assumes (`rotor_dyn_coef` works out to a
 # ~60 ms time constant on cf21B_500 and ~135 ms on cf2x_L250). More derivative damping and a less
 # aggressive integrator are what that extra actuator phase lag buys. Measured roll/pitch step
-# response to 1.745 rad/s from settled hover, at 500 Hz:
+# response to 1.745 rad/s from settled hover, at 500 Hz (re-measured 4 Oct 2026 without the torque clamp; with it:
+# 2.3% / 0.060 s and 10.3% / 0.130 s; the unretuned column predates the change):
 #
 #   drone       overshoot  5% settling      with the unretuned ki=500, kd=2.5
-#   cf21B_500        2.3%       0.060 s        28.5% / 0.078 s
-#   cf2x_L250       10.3%       0.130 s        44.9% / 0.242 s
+#   cf21B_500        2.1%       0.058 s        28.5% / 0.078 s
+#   cf2x_L250       10.2%       0.120 s        44.9% / 0.242 s
 #
 # Note that `kd` is only conditionally stable: it relies on the actuator lag to roll off the
 # one-step backward difference it takes. Driving the rigid body from this controller with no
@@ -53,7 +54,6 @@ kp = [250.0, 250.0, 120.0]
 ki = [200.0, 200.0, 16.7]
 kd = [6.0, 6.0, 0.0]
 int_err_max = [33.3, 33.3, 166.7]
-torque_max = [0.00697328835, 0.00697328835, 0.001575766564]
 
 [cf2x_P250]
 [cf2x_P250.core]
@@ -68,7 +68,6 @@ kp = [250.0, 250.0, 120.0]
 ki = [200.0, 200.0, 16.7]
 kd = [6.0, 6.0, 0.0]
 int_err_max = [33.3, 33.3, 166.7]
-torque_max = [0.00697328835, 0.00697328835, 0.001499030819]
 
 [cf2x_T350]
 [cf2x_T350.core]
@@ -83,7 +82,6 @@ kp = [250.0, 250.0, 120.0]
 ki = [200.0, 200.0, 16.7]
 kd = [6.0, 6.0, 0.0]
 int_err_max = [33.3, 33.3, 166.7]
-torque_max = [0.01045993252, 0.01045993252, 0.001722204204]
 
 [cf21B_500]
 [cf21B_500.core]
@@ -98,4 +96,3 @@ kp = [250.0, 250.0, 120.0]
 ki = [200.0, 200.0, 16.7]
 kd = [6.0, 6.0, 0.0]
 int_err_max = [33.3, 33.3, 166.7]
-torque_max = [0.01263144839, 0.01263144839, 0.00212183107]

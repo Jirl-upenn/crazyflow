@@ -49,7 +49,6 @@ def body_rate2force_torque(
     ki: Array,
     kd: Array,
     int_err_max: Array,
-    torque_max: Array,
 ) -> tuple[Array, Array, Array]:
     r"""Compute the force and torque commanded by a body-rate PID controller.
 
@@ -61,11 +60,12 @@ def body_rate2force_torque(
     does not produce a derivative kick. With a constant setpoint the two are identical.
 
     Note:
-        The commanded collective thrust is passed through untouched. Saturation happens one stage
-        later, in
+        The commanded collective thrust and the torque are passed on unclipped. Saturation happens
+        one stage later, in
         [force_torque2rotor_vel][crazyflow.control.mellinger.force_torque2rotor_vel], which clips
-        the individual motor forces. The torque, on the other hand, is clipped here, because
-        clipping motor forces distorts the requested torque instead of bounding it.
+        the individual motor forces -- as the Crazyflie firmware does, whose rate PIDs only
+        saturate their outputs to the int16 range before power distribution clips the motors.
+        The only windup bound is `int_err_max`, again as in the firmware.
 
     Warning:
         ``ang_vel`` is in the body frame, and so is the commanded rate. ``cmd`` puts the thrust
@@ -90,7 +90,6 @@ def body_rate2force_torque(
         ki: Integral gain on the rate error with shape (3,), in 1/s².
         kd: Derivative gain on the measured angular acceleration with shape (3,), dimensionless.
         int_err_max: Range of the integral error with shape (3,) in rad.
-        torque_max: Maximum absolute body torque with shape (3,) in Nm.
 
     Returns:
         The collective force with shape (..., 1) in N, the body torque with shape (..., 3) in Nm,
@@ -111,7 +110,7 @@ def body_rate2force_torque(
     xp = array_namespace(ang_vel)
     device = xp_device(ang_vel)
     J, kp, ki, kd = to_xp(J, kp, ki, kd, xp=xp, device=device)
-    int_err_max, torque_max = to_xp(int_err_max, torque_max, xp=xp, device=device)
+    int_err_max = to_xp(int_err_max, xp=xp, device=device)
 
     ang_vel_des = cmd[..., :3]
     force_des = cmd[..., 3]
@@ -119,37 +118,14 @@ def body_rate2force_torque(
 
     ang_vel_err = ang_vel_des - ang_vel
     ang_vel_err_i = xp.zeros_like(ang_vel) if ang_vel_err_i is None else ang_vel_err_i
-    int_candidate = xp.clip(ang_vel_err_i + ang_vel_err * dt, -int_err_max, int_err_max)
+    ang_vel_err_i = xp.clip(ang_vel_err_i + ang_vel_err * dt, -int_err_max, int_err_max)
     # Derivative on the measurement rather than on the error, so that stepping the setpoint does
     # not kick the derivative term.
     prev_ang_vel = ang_vel if prev_ang_vel is None else prev_ang_vel
     ang_acc = (ang_vel - prev_ang_vel) / dt
 
-    ang_acc_des = kp * ang_vel_err + ki * int_candidate - kd * ang_acc
-    torque_raw = (J @ ang_acc_des[..., None])[..., 0]
-    torque = xp.clip(torque_raw, -torque_max, torque_max)
-    # Anti-windup by conditional integration. On an axis whose torque is already saturated, and
-    # where the update would push the integral further in the direction that is saturating, hold
-    # the previous value instead. Without this the integrator keeps charging through every
-    # saturated interval and then has to be discharged by an equally long excursion the other way.
-    # `int_err_max` alone does not prevent that: a limit loose enough not to interfere with the
-    # nominal response is far too loose to bound the windup.
-    #
-    # Only *growth* is frozen. An update that shrinks the integral is always allowed, so an
-    # integrator charged before the setpoint reversed can still discharge while saturated, which a
-    # plain "freeze whenever saturated" rule would trap. Back-calculation is the other standard
-    # cure, but it is a poor fit here: saturation is routinely severe (the proportional term alone
-    # can ask for a hundred times the torque the mixer can deliver), and back-calculation responds
-    # by slamming the integral to the opposite limit.
-    #
-    # Comparing signs of torque and rate error axis by axis assumes torque axis i is driven by
-    # error axis i, which holds exactly for the diagonal inertia of every drone in
-    # `available_drones`. For a strongly coupled inertia it degrades to a heuristic, and stays
-    # conservative: it can only ever hold the integral, never grow it.
-    saturated = torque_raw != torque
-    growing = xp.abs(int_candidate) > xp.abs(ang_vel_err_i)
-    winding_up = saturated & growing & (xp.sign(torque_raw) == xp.sign(ang_vel_err))
-    ang_vel_err_i = xp.where(winding_up, ang_vel_err_i, int_candidate)
+    ang_acc_des = kp * ang_vel_err + ki * ang_vel_err_i - kd * ang_acc
+    torque = (J @ ang_acc_des[..., None])[..., 0]
     # Do not torque the drone while it is not commanded to produce any thrust. The Mellinger
     # attitude controller gates on the same condition.
     torque = xp.where((force_des > 0)[..., None], torque, 0.0)
