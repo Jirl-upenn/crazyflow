@@ -126,12 +126,15 @@ def parametrize(
 def filter_to_signature(params: dict, fn: Callable) -> dict:
     """Keep only the params accepted by ``fn``.
 
-    Asserts that every keyword-only parameter of ``fn`` (the injectable params, as opposed to the
-    positional runtime inputs) is present in ``params``.
+    Asserts that every keyword-only parameter of ``fn`` without a default (the injectable params, as
+    opposed to the positional runtime inputs) is present in ``params``; keyword-only parameters with a
+    default are optional per drone.
     """
     sig = inspect.signature(fn).parameters
     filtered = {k: v for k, v in params.items() if k in sig}
-    required = {k for k, p in sig.items() if p.kind == inspect.Parameter.KEYWORD_ONLY}
+    required = {
+        k for k, p in sig.items() if p.kind == inspect.Parameter.KEYWORD_ONLY and p.default is p.empty
+    }
     missing = required - filtered.keys()
     assert not missing, f"Missing parameters for {fn.__name__}: {missing}"
     return filtered

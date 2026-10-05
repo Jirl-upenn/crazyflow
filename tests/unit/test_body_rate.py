@@ -65,14 +65,32 @@ def test_derivative_has_no_kick_on_first_call():
 
 
 @pytest.mark.unit
-def test_torque_not_clipped():
-    """No torque-space clip: as in the firmware, a saturating demand reaches the mixer unclipped."""
+def test_firmware_torque_clip():
+    """cf21B_500 runs the firmware rate loop: each axis saturates at the firmware's int16-equivalent torque."""
+    ctrl = parametrize(body_rate2force_torque, "cf21B_500")
+    clip = np.asarray(ctrl.keywords["torque_clip"])
+    _, torque, _ = ctrl(np.zeros(3), np.array([500.0, -500.0, 500.0, 0.4]))
+    assert np.allclose(np.abs(torque), clip), f"Saturated command must sit at the clip: {torque} vs {clip}"
+
+
+@pytest.mark.unit
+def test_no_torque_clip_by_default():
+    """Without torque_clip (drones with no firmware rate loop) a saturating demand reaches the mixer unclipped."""
     ctrl = parametrize(body_rate2force_torque, "cf21B_500")
     err = np.array([500.0, -500.0, 500.0])
-    _, torque, _ = ctrl(np.zeros(3), np.array([*err, 0.4]))
+    _, torque, _ = ctrl(np.zeros(3), np.array([*err, 0.4]), torque_clip=None)
     J, kp, ki = (np.asarray(ctrl.keywords[k]) for k in ("J", "kp", "ki"))
-    expected = J @ (kp * err + ki * np.clip(err / 500, -1e9, 1e9))   # one step of integration at 500 Hz
+    int_err_max = np.asarray(ctrl.keywords["int_err_max"])
+    expected = J @ (kp * err + ki * np.clip(err / 500, -int_err_max, int_err_max))   # one integration step at 500 Hz
     assert np.allclose(torque, expected), f"Torque was altered: {torque} vs {expected}"
+
+
+@pytest.mark.unit
+def test_zero_thrust_resets_integral():
+    """At zero thrust the firmware zeroes its outputs and resets its PIDs; cf21B_500 does the same."""
+    ctrl = parametrize(body_rate2force_torque, "cf21B_500")
+    _, torque, int_err = ctrl(np.zeros(3), np.array([1.0, 1.0, 1.0, 0.0]), ang_vel_err_i=np.array([0.3, -0.2, 0.1]))
+    assert np.all(torque == 0) and np.all(int_err == 0), f"Not reset at zero thrust: {torque}, {int_err}"
 
 
 @pytest.mark.unit

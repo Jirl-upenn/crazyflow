@@ -49,6 +49,8 @@ def body_rate2force_torque(
     ki: Array,
     kd: Array,
     int_err_max: Array,
+    torque_clip: Array | None = None,
+    zero_thrust_reset: Array | bool = False,
 ) -> tuple[Array, Array, Array]:
     r"""Compute the force and torque commanded by a body-rate PID controller.
 
@@ -90,6 +92,10 @@ def body_rate2force_torque(
         ki: Integral gain on the rate error with shape (3,), in 1/s².
         kd: Derivative gain on the measured angular acceleration with shape (3,), dimensionless.
         int_err_max: Range of the integral error with shape (3,) in rad.
+        torque_clip: Optional per-axis torque clip with shape (3,) in Nm -- a plain clip with no anti-windup, as
+            the firmware's int16 saturation of each rate-PID output. None (default) = no clip.
+        zero_thrust_reset: If true, a zero thrust command also resets the integral (the firmware zeroes its
+            outputs and resets its PIDs while thrust is 0). Default False: only the torque is gated.
 
     Returns:
         The collective force with shape (..., 1) in N, the body torque with shape (..., 3) in Nm,
@@ -126,6 +132,11 @@ def body_rate2force_torque(
 
     ang_acc_des = kp * ang_vel_err + ki * ang_vel_err_i - kd * ang_acc
     torque = (J @ ang_acc_des[..., None])[..., 0]
+    if torque_clip is not None:
+        torque_clip = to_xp(torque_clip, xp=xp, device=device)
+        torque = xp.clip(torque, -torque_clip, torque_clip)
+    off = (force_des <= 0)[..., None] & to_xp(zero_thrust_reset, xp=xp, device=device)
+    ang_vel_err_i = xp.where(off, 0.0, ang_vel_err_i)
     # Do not torque the drone while it is not commanded to produce any thrust. The Mellinger
     # attitude controller gates on the same condition.
     torque = xp.where((force_des > 0)[..., None], torque, 0.0)

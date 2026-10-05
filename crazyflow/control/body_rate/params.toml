@@ -92,7 +92,21 @@ J = [
 ]
 
 [cf21B_500.body_rate2force_torque]
-kp = [250.0, 250.0, 120.0]
-ki = [200.0, 200.0, 16.7]
-kd = [6.0, 6.0, 0.0]
-int_err_max = [33.3, 33.3, 166.7]
+# The Crazyflie firmware's own rate loop (crazyflie-firmware platform_defaults_cf21bl.h, the brushless 2.1 this
+# model represents), converted to these SI units (4 Oct 2026). Firmware gains are PWM per deg/s through the legacy
+# mixer (r/2, p/2, +-yaw per motor, PWM linear in force at 0.2 N / 65535), so gain_cf = gain_fw * s / J with
+#   s_rp = 2 L (0.2 / 65535) (180 / pi) = 1.2365e-5,  s_yaw = 4 * 0.00569 (0.2 / 65535) (180 / pi) = 3.98e-6
+# (0.00569 = the firmware's THRUST2TORQUE); firmware kp 200/200/120, ki 400/400/16.7, kd 2.5/2.5/0. The integral
+# limits are the firmware's 33.3 / 166.7 deg s in rad. `torque_clip` is the firmware's int16 saturation of each
+# rate-PID output (attitude_pid_controller.c) seen through the same mixer -- a plain per-axis clip, no anti-windup;
+# `zero_thrust_reset` resets the integral at zero thrust as controller_pid.c resets its PIDs. Roll and pitch gains
+# differ only because J does: the firmware's are equal in torque. On this rotor model the loop overshoots a
+# 1.745 rad/s roll step ~29% (5% settling 0.13 s) and yaw rises to 90% in 0.22 s; it trains at least as well as
+# the previous crazyflow retune (kp 250/250/120, ki 200/200/16.7, kd 6/6/0, int_err_max 33.3/33.3/166.7 rad)
+# in a 3-seed ablation (mjc_dronetests runs/oct04/fwloop vs faithful).
+kp = [98.9, 88.3, 9.75]
+ki = [197.8, 176.6, 1.356]
+kd = [1.236, 1.104, 0.0]
+int_err_max = [0.5812, 0.5812, 2.9095]
+torque_clip = [7.07e-3, 7.07e-3, 2.28e-3]
+zero_thrust_reset = true
