@@ -132,13 +132,19 @@ def dynamics(
         warnings.warn("Rotor velocity not provided, using commanded rotor velocity.")
         rotor_vel, rotor_vel_dot = cmd, None
     else:
+        # Coefficients are indexed on their LAST axis, so the (4,) default and a per-world
+        # (N, 1, 1, 4) copy (domain randomization) both broadcast against rotor_vel (N, M, 4).
         rotor_vel_dot = xp.where(
             cmd > rotor_vel,
-            rotor_dyn_coef[0] * (cmd - rotor_vel) + rotor_dyn_coef[1] * (cmd**2 - rotor_vel**2),
-            rotor_dyn_coef[2] * (cmd - rotor_vel) + rotor_dyn_coef[3] * (cmd**2 - rotor_vel**2),
+            rotor_dyn_coef[..., 0] * (cmd - rotor_vel)
+            + rotor_dyn_coef[..., 1] * (cmd**2 - rotor_vel**2),
+            rotor_dyn_coef[..., 2] * (cmd - rotor_vel)
+            + rotor_dyn_coef[..., 3] * (cmd**2 - rotor_vel**2),
         )
     # Creating force and torque vector
-    forces_motor = rpm2thrust[0] + rpm2thrust[1] * rotor_vel + rpm2thrust[2] * rotor_vel**2
+    forces_motor = (
+        rpm2thrust[..., 0] + rpm2thrust[..., 1] * rotor_vel + rpm2thrust[..., 2] * rotor_vel**2
+    )
     forces_motor_tot = xp.sum(forces_motor, axis=-1)
     zeros = xp.zeros_like(forces_motor_tot)
     forces_motor_vec = xp.stack((zeros, zeros, forces_motor_tot), axis=-1)
@@ -146,7 +152,9 @@ def dynamics(
     force_gravity = gravity_vec * mass
     force_drag = (rot_mat.mT @ (drag_matrix @ (rot_mat @ vel[..., None])))[..., 0]
 
-    torques_motor = rpm2torque[0] + rpm2torque[1] * rotor_vel + rpm2torque[2] * rotor_vel**2
+    torques_motor = (
+        rpm2torque[..., 0] + rpm2torque[..., 1] * rotor_vel + rpm2torque[..., 2] * rotor_vel**2
+    )
     torque_thrust = (mixing_matrix @ (forces_motor)[..., None])[..., 0] * xp.stack(
         [L, L, xp.asarray(0.0)]
     )
@@ -330,15 +338,15 @@ class Params:
     """Inertia matrix of the drone."""
     J_inv: Array  # (N, M, 3, 3)
     """Inverse of the inertia matrix of the drone."""
-    rpm2thrust: Array  # (N, M, 1)
+    rpm2thrust: Array  # (3,); per-world copies (N, 1, 1, 3) -- indexed on the last axis
     """Force constant of the drone."""
-    rpm2torque: Array  # (N, M, 1)
+    rpm2torque: Array  # (3,); per-world copies (N, 1, 1, 3) -- indexed on the last axis
     """Torque constant of the drone."""
     mixing_matrix: Array  # (N, M, 3, 4)
     """Mixing matrix of the drone."""
-    drag_matrix: Array  # (N, M, 3, 3)
+    drag_matrix: Array  # (3, 3); per-world copies (N, 1, 3, 3)
     """Drag matrix of the drone."""
-    rotor_dyn_coef: Array  # (N, M, 4)
+    rotor_dyn_coef: Array  # (4,); per-world copies (N, 1, 1, 4) -- indexed on the last axis
     """Rotor speed dynamics time constant of the drone."""
 
     @staticmethod
