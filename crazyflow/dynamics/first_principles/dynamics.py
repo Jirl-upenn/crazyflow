@@ -74,6 +74,7 @@ def dynamics(
     mixing_matrix: Array,
     drag_matrix: Array,
     rotor_dyn_coef: Array,
+    rotor_vel_max: Array | float | None = None,
 ) -> tuple[Array, Array, Array, Array, Array | None]:
     r"""First principles dynamics for a quatrotor.
 
@@ -106,6 +107,8 @@ def dynamics(
         mixing_matrix: Mixing matrix denoting the turn direction of the motors (4x3).
         drag_matrix: Drag matrix containing the linear drag coefficients (3x3).
         rotor_dyn_coef: Rotor dynamics coefficients.
+        rotor_vel_max: Highest speed the motors reach (RPMs); the command is clipped to it before the rotor
+            dynamics. None: no limit.
 
 
     Warning:
@@ -127,6 +130,9 @@ def dynamics(
     # numpy backends.
     rot_mat_wb = quat_to_rot_mat(xp, quat)  # from body to world
     rot_mat = rot_mat_wb.mT  # from world to body (inverse of a rotation matrix is its transpose)
+    # Motor saturation: whatever the controller asks for, the rotors reach at most rotor_vel_max
+    if rotor_vel_max is not None:
+        cmd = xp.minimum(cmd, rotor_vel_max)
     # Rotor dynamics
     if rotor_vel is None:
         warnings.warn("Rotor velocity not provided, using commanded rotor velocity.")
@@ -347,6 +353,8 @@ class Params:
     """Drag matrix of the drone."""
     rotor_dyn_coef: Array  # (4,); per-world copies (N, 1, 1, 4) -- indexed on the last axis
     """Rotor speed dynamics time constant of the drone."""
+    rotor_vel_max: Array | None = None  # None (no limit) or per-world (N, 1, 1)
+    """Highest motor speed (RPMs) the rotors reach: the commanded speed is clipped to it. None: no limit."""
 
     @staticmethod
     def create(n_worlds: int, n_drones: int, drone: str, device: Device) -> Params:
