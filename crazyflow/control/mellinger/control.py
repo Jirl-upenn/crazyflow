@@ -145,8 +145,8 @@ def state2attitude(
     # instead of dynamically scaling with the mass parameter of the controller! Hence, we include
     # this conversion here and thus effectively rescale the thrust slightly. The conversion below
     # maps thrust -> PWM -> rescaled thrust.
-    thrust = pwm2force(mass_thrust * current_thrust, thrust_max * 4, pwm_max)
-    command_rpyt = xp.concat((command_RPY, thrust[..., None]), axis=-1)
+    thrust = pwm2force(mass_thrust * current_thrust[..., None], thrust_max * 4, pwm_max)
+    command_rpyt = xp.concat((command_RPY, thrust), axis=-1)
     return command_rpyt, int_pos_err
 
 
@@ -238,7 +238,7 @@ def attitude2force_torque(
     # l. 297 ff
     torque_pwm = xp.clip(torque_pwm, -torque_pwm_max, torque_pwm_max)
     torque_pwm = xp.where((force_des > 0)[..., None], torque_pwm, 0.0)
-    force_des_pwm = force2pwm(force_des / 4, thrust_max, pwm_max)
+    force_des_pwm = force2pwm(force_des[..., None] / 4, thrust_max, pwm_max)  # (N, M, 1)
     pwms = force_torque_pwms2pwms(force_des_pwm, torque_pwm, mixing_matrix)
     pwms = xp.where(xp.all(pwms == 0), 0.0, xp.clip(pwms, pwm_min, pwm_max))
 
@@ -256,16 +256,27 @@ def attitude2force_torque(
     # controllers, we still want to return SI forces and torques. We thus need to convert the legacy
     # output to SI units.
     # l. 310 ff
-    torque_des = (mixing_matrix @ motor_forces[..., None])[..., 0] * xp.stack([L, L, thrust2torque])
+    torque_des = (mixing_matrix @ motor_forces[..., None])[..., 0] * _arm(xp, L, thrust2torque)
     force_des = xp.sum(motor_forces, axis=-1)[..., None]
     return force_des, torque_des, r_int_error
 
 
+def _arm(xp, L, thrust2torque):
+    """[L, L, thrust2torque], built by broadcasting so per-world (N, 1, 1) values work as well as scalars."""
+    return L * xp.asarray([1.0, 1.0, 0.0]) + thrust2torque * xp.asarray([0.0, 0.0, 1.0])
+
+
+def _row_mix(x, mixing_matrix):
+    """x (..., 3) @ mixing_matrix as row vectors: (3, 4) and per-world (N, 1, 3, 4) both give (..., 4) (a plain
+    batched matmul would broadcast (N, M, 3) against (N, 1, 3, 4) into (N, N, M, 4))."""
+    return (x[..., None, :] @ mixing_matrix)[..., 0, :]
+
+
 def force_torque_pwms2pwms(force_pwm: Array, torque_pwm: Array, mixing_matrix: Array) -> Array:
-    """Convert desired collective thrust and torques to rotor speeds using legacy behavior."""
+    """Convert desired collective thrust (..., 1) and torques (..., 3) to motor PWMs using legacy behavior."""
     xp = array_namespace(force_pwm)
     torque_pwm = xp.concatenate((torque_pwm[..., :2] / 2, torque_pwm[..., 2:]), axis=-1)
-    return force_pwm[..., None] + (torque_pwm @ mixing_matrix)
+    return force_pwm + _row_mix(torque_pwm, mixing_matrix)
 
 
 def force_torque2rotor_vel(
@@ -308,7 +319,7 @@ def force_torque2rotor_vel(
     xp = array_namespace(torque)
     assert torque.shape[-1] == 3, f"Torque must have shape (..., 3), but has {torque.shape}"
     assert force.shape[-1] == 1, f"Force must have shape (..., 1), but has {force.shape}"
-    torque_forces = (torque * xp.asarray([1 / L, 1 / L, 1 / thrust2torque])) @ mixing_matrix
+    torque_forces = _row_mix(torque * _arm(xp, 1 / L, 1 / thrust2torque), mixing_matrix)
     motor_forces = (torque_forces + force) / 4
     # Clip motor forces on the thrust instead of PWM level.
     motor_forces = xp.where(xp.all(force == 0), 0.0, xp.clip(motor_forces, thrust_min, thrust_max))

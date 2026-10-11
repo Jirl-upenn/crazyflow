@@ -155,9 +155,8 @@ def dynamics(
     torques_motor = (
         rpm2torque[..., 0] + rpm2torque[..., 1] * rotor_vel + rpm2torque[..., 2] * rotor_vel**2
     )
-    torque_thrust = (mixing_matrix @ (forces_motor)[..., None])[..., 0] * xp.stack(
-        [L, L, xp.asarray(0.0)]
-    )
+    # [L, L, 0] built by broadcasting, so a per-world L (N, 1, 1) works as well as a scalar
+    torque_thrust = (mixing_matrix @ (forces_motor)[..., None])[..., 0] * (L * xp.asarray([1.0, 1.0, 0.0]))
     torque_drag = (mixing_matrix @ (torques_motor)[..., None])[..., 0] * xp.stack(
         [xp.asarray(0.0), xp.asarray(0.0), xp.asarray(1.0)]
     )

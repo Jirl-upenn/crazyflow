@@ -69,16 +69,14 @@ def motor_force2rotor_vel(motor_forces: Array, rpm2thrust: Array) -> Array:
 
     Args:
         motor_forces: Motor forces in SI units with shape (..., N).
-        rpm2thrust: RPM to thrust conversion factors.
+        rpm2thrust: RPM to thrust conversion factors, indexed on the last axis ((3,) or per-world (N, 1, 1, 3)).
 
     Returns:
         Array of rotor velocities in rad/s with shape (..., N).
     """
     xp = array_namespace(motor_forces)
-    return (
-        -rpm2thrust[1]
-        + xp.sqrt(rpm2thrust[1] ** 2 - 4 * rpm2thrust[2] * (rpm2thrust[0] - motor_forces))
-    ) / (2 * rpm2thrust[2])
+    k0, k1, k2 = rpm2thrust[..., 0], rpm2thrust[..., 1], rpm2thrust[..., 2]
+    return (-k1 + xp.sqrt(k1**2 - 4 * k2 * (k0 - motor_forces))) / (2 * k2)
 
 
 def force2pwm(thrust: Array | float, thrust_max: Array | float, pwm_max: Array | float) -> Array:
