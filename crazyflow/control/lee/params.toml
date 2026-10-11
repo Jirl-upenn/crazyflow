@@ -58,7 +58,7 @@ Kpos_D_limit = 100.0
 
 [cf21B_500]
 [cf21B_500.core]
-mass = 0.029
+mass = 0.0393  # the firmware's CF_MASS for the 2.1 Brushless (platform_defaults_cf21bl.h), as controller_lee.c uses
 J = [16.571710e-6, 16.655602e-6, 29.261652e-6]
 
 [cf21B_500.attitude2force_torque]
