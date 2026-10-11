@@ -240,7 +240,8 @@ def attitude2force_torque(
     torque_pwm = xp.where((force_des > 0)[..., None], torque_pwm, 0.0)
     force_des_pwm = force2pwm(force_des[..., None] / 4, thrust_max, pwm_max)  # (N, M, 1)
     pwms = force_torque_pwms2pwms(force_des_pwm, torque_pwm, mixing_matrix)
-    pwms = xp.where(xp.all(pwms == 0), 0.0, xp.clip(pwms, pwm_min, pwm_max))
+    # per drone: motors all at zero -> stay off (firmware); reducing over every world coupled the worlds
+    pwms = xp.where(xp.all(pwms == 0, axis=-1, keepdims=True), 0.0, xp.clip(pwms, pwm_min, pwm_max))
 
     # Info: The Mellinger controller in the firmware ends here. However, we enforce a standardized
     # interface in the simulation from states -> attitude -> force_torque. We therefore need this
@@ -322,7 +323,9 @@ def force_torque2rotor_vel(
     torque_forces = _row_mix(torque * _arm(xp, 1 / L, 1 / thrust2torque), mixing_matrix)
     motor_forces = (torque_forces + force) / 4
     # Clip motor forces on the thrust instead of PWM level.
-    motor_forces = xp.where(xp.all(force == 0), 0.0, xp.clip(motor_forces, thrust_min, thrust_max))
+    # Per drone: zero collective -> motors off. Was xp.all over every world, so one world's zero thrust was
+    # clipped up to thrust_min unless all worlds commanded zero.
+    motor_forces = xp.where(force == 0, 0.0, xp.clip(motor_forces, thrust_min, thrust_max))
     # Assume perfect battery compensation and calculate the desired motor speeds directly
     return motor_force2rotor_vel(motor_forces, rpm2thrust)
 
