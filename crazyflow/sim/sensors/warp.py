@@ -51,6 +51,7 @@ def render_warp_rgb(
     background: tuple[float, float, float] | None = None,
     supersample: int = 1,
     camera_prefix: str = "fpv_cam",
+    geom_groups: Sequence[int] = (0, 1, 2),
     geom_rgba: Array | None = None,
 ) -> Array:
     """Render RGB images of the MuJoCo scene in all worlds.
@@ -69,6 +70,9 @@ def render_warp_rgb(
             times the resolution and each block is averaged, which suppresses the flicker of
             textures finer than a pixel. The cost grows with ``supersample**2``.
         camera_prefix: Camera name prefix, resolved to ``{camera_prefix}:{drone}`` for each drone.
+        geom_groups: MuJoCo geom groups to render. The drone models put their visual meshes in
+            group 2, so ``(0, 1)`` hides every drone, including the camera's own propellers and
+            guards, and also other drones in the same world.
         geom_rgba: Per-geom RGBA colors replacing the model's, of shape (ngeom, 4) or, to color
             each world differently, (n_worlds, ngeom, 4). As in MuJoCo, only geoms without a
             material take their color from it.
@@ -77,7 +81,7 @@ def render_warp_rgb(
         RGB images with values in [0, 1] of shape (n_worlds, n_selected, height, width, 3).
     """
     render = _cached_renderer(
-        sim, drones, resolution, background, supersample, camera_prefix, depth=False
+        sim, drones, resolution, background, supersample, camera_prefix, False, 10.0, geom_groups
     )
     return render(sim.data, geom_rgba)
 
@@ -91,6 +95,7 @@ def render_warp_rgbd(
     max_range: float = 10.0,
     supersample: int = 1,
     camera_prefix: str = "fpv_cam",
+    geom_groups: Sequence[int] = (0, 1, 2),
     geom_rgba: Array | None = None,
 ) -> Array:
     """Render RGB-D images of the MuJoCo scene in all worlds.
@@ -111,6 +116,9 @@ def render_warp_rgbd(
             textures finer than a pixel. The cost grows with ``supersample**2``. Depth reports
             the nearest sample in each block.
         camera_prefix: Camera name prefix, resolved to ``{camera_prefix}:{drone}`` for each drone.
+        geom_groups: MuJoCo geom groups to render. The drone models put their visual meshes in
+            group 2, so ``(0, 1)`` hides every drone, including the camera's own propellers and
+            guards, and also other drones in the same world.
         geom_rgba: Per-geom RGBA colors replacing the model's, of shape (ngeom, 4) or, to color
             each world differently, (n_worlds, ngeom, 4). As in MuJoCo, only geoms without a
             material take their color from it.
@@ -120,7 +128,8 @@ def render_warp_rgbd(
         (n_worlds, n_selected, height, width, 4).
     """
     render = _cached_renderer(
-        sim, drones, resolution, background, supersample, camera_prefix, True, max_range
+        sim, drones, resolution, background, supersample, camera_prefix, True, max_range,
+        geom_groups,
     )
     return render(sim.data, geom_rgba)
 
@@ -133,6 +142,7 @@ def build_render_warp_fn(
     background: tuple[float, float, float] | None = None,
     supersample: int = 1,
     camera_prefix: str = "fpv_cam",
+    geom_groups: Sequence[int] = (0, 1, 2),
 ) -> Callable[..., Array]:
     """Build a Warp RGB renderer for a drone selection, camera prefix, and resolution.
 
@@ -144,7 +154,9 @@ def build_render_warp_fn(
         per-geom colors as in :func:`render_warp_rgb`, to images. It can be called inside jit.
     """
     drone_ids = resolve_drones(sim, drones)
-    return _build(sim, drone_ids, resolution, background, supersample, camera_prefix, depth=False)
+    return _build(
+        sim, drone_ids, resolution, background, supersample, camera_prefix, False, 10.0, geom_groups
+    )
 
 
 @requires_gpu
@@ -156,6 +168,7 @@ def build_render_warp_rgbd_fn(
     max_range: float = 10.0,
     supersample: int = 1,
     camera_prefix: str = "fpv_cam",
+    geom_groups: Sequence[int] = (0, 1, 2),
 ) -> Callable[..., Array]:
     """Build a Warp RGB-D renderer for a drone selection, camera prefix, and resolution.
 
@@ -163,7 +176,8 @@ def build_render_warp_rgbd_fn(
     """
     drone_ids = resolve_drones(sim, drones)
     return _build(
-        sim, drone_ids, resolution, background, supersample, camera_prefix, True, max_range
+        sim, drone_ids, resolution, background, supersample, camera_prefix, True, max_range,
+        geom_groups,
     )
 
 
@@ -176,16 +190,22 @@ def _cached_renderer(
     camera_prefix: str,
     depth: bool,
     max_range: float = 10.0,
+    geom_groups: Sequence[int] = (0, 1, 2),
 ) -> Callable[..., Array]:
     """Look up the renderer for these arguments, building it on first use."""
     drone_ids = resolve_drones(sim, drones)
     background = None if background is None else tuple(float(x) for x in background)
     max_range = float(max_range)
-    key = (drone_ids, tuple(resolution), background, supersample, camera_prefix, depth, max_range)
+    geom_groups = tuple(int(g) for g in geom_groups)
+    key = (
+        drone_ids, tuple(resolution), background, supersample, camera_prefix, depth, max_range,
+        geom_groups,
+    )
     renderers = _RENDERERS.setdefault(sim.mj_model, {})
     if key not in renderers:
         renderers[key] = _build(
-            sim, drone_ids, resolution, background, supersample, camera_prefix, depth, max_range
+            sim, drone_ids, resolution, background, supersample, camera_prefix, depth, max_range,
+            geom_groups,
         )
     return renderers[key]
 
@@ -199,6 +219,7 @@ def _build(
     camera_prefix: str,
     depth: bool,
     max_range: float = 10.0,
+    geom_groups: Sequence[int] = (0, 1, 2),
 ) -> Callable[..., Array]:
     """Set up the MuJoCo Warp model, data, and render context, and return the jitted renderer."""
     from mujoco.mjx import warp as mjxw
@@ -250,7 +271,7 @@ def _build(
         render_depth=selected if depth else False,
         use_textures=True,
         use_shadows=False,
-        enabled_geom_groups=[0, 1, 2],
+        enabled_geom_groups=list(geom_groups),
         render_skybox=background is None and has_skybox,
         **({} if background is None else {"background_color": (*background, 1.0)}),
     )

@@ -152,6 +152,22 @@ def test_render_warp_camera_prefix():
 
 @pytest.mark.unit
 @requires_warp
+def test_render_warp_geom_groups():
+    """Leaving out group 2 hides the drone's visual meshes, e.g. from its own camera."""
+    sim = Sim(n_worlds=1, n_drones=1, device="gpu")
+    _set_poses(sim, 0, pitch=(-1.2, -1.2))  # Nose up, only the sky and the drone itself are in view
+    bg = (1.0, 0.0, 0.0)
+    full = np.asarray(render_warp_rgb(sim, resolution=RES, background=bg))
+    hidden = np.asarray(render_warp_rgb(sim, resolution=RES, background=bg, geom_groups=(0, 1)))
+    assert not np.all(full == np.array(bg), axis=-1).all(), "The camera must see its own drone"
+    assert np.all(hidden == np.array(bg), axis=-1).all(), "Hidden drone meshes must not be hit"
+    # The compiled variant takes the same groups
+    render_fn = build_render_warp_fn(sim, resolution=RES, background=bg, geom_groups=(0, 1))
+    assert np.allclose(hidden, render_fn(sim.data), atol=1e-6)
+
+
+@pytest.mark.unit
+@requires_warp
 def test_render_warp_rgbd():
     sim = Sim(n_worlds=2, n_drones=2, device="gpu")
     _set_poses(sim, 0)
