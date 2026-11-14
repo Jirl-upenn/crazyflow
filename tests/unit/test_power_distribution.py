@@ -55,17 +55,36 @@ def test_body_rate_pipeline_uses_power_distribution():
     assert stages["force_torque_controller"] is control_power_distribution
 
 
+
 @pytest.mark.unit
 @pytest.mark.parametrize("drone", available_drones)
-def test_matches_shared_mixer(drone: str):
-    """Until it follows the firmware, the power distribution is the shared mixer: same rotor speeds for any force
-    and torque, the per-motor clip and zero collective included."""
+def test_matches_shared_mixer_below_thrust_max(drone: str):
+    """Where no motor asks for more than THRUST_MAX the shared mixer and the power distribution agree."""
     from crazyflow.control.mellinger import force_torque2rotor_vel
 
     pd = parametrize(power_distribution, drone)
     ft = parametrize(force_torque2rotor_vel, drone)
+    thrust_max = float(load_params(force_torque2rotor_vel, drone)["thrust_max"])
     rng = np.random.default_rng(0)
-    force = rng.uniform(0.0, 1.0, (512, 1))
+    force = rng.uniform(0.0, 2.0 * thrust_max, (512, 1))
     force[:16] = 0.0
-    torque = rng.uniform(-6e-3, 6e-3, (512, 3))
+    torque = rng.uniform(-1e-3, 1e-3, (512, 3))
     np.testing.assert_allclose(pd(force, torque), ft(force, torque), rtol=1e-6)
+
+
+@pytest.mark.unit
+def test_ceiling_is_battery_compensated():
+    """cf21B_500 at 3.7 V: a single motor gets its request beyond THRUST_MAX = 0.2 N up to the thrust at full
+    battery voltage, vmotor2thrust(3.7) = 0.273 N (the legacy mixer does not clip before compensation)."""
+    p = load_params(power_distribution, "cf21B_500")
+    c = np.asarray(p["vmotor2thrust"], dtype=np.float64)
+    ceiling = c[0] + c[1] * 3.7 + c[2] * 3.7**2 + c[3] * 3.7**3
+    assert 0.27 < ceiling < 0.28
+    pd = parametrize(power_distribution, "cf21B_500")
+    L = float(p["L"])
+    for want in (0.25, 0.4):
+        # equal roll and pitch torques raise motor 2 (mixing column 2: +roll, +pitch) by d over the 0.12 N base:
+        # each splits as tau / L across the four columns, then / 4
+        d = want - 0.12
+        rpm = pd(np.array([0.48]), np.array([2 * d * L, 2 * d * L, 0.0]))
+        np.testing.assert_allclose(rpm[2], _rpm(min(want, ceiling), p["rpm2thrust"]), rtol=1e-5)

@@ -79,6 +79,15 @@ def motor_force2rotor_vel(motor_forces: Array, rpm2thrust: Array) -> Array:
     return (-k1 + xp.sqrt(k1**2 - 4 * k2 * (k0 - motor_forces))) / (2 * k2)
 
 
+def vmotor2thrust_poly(v: Array, vmotor2thrust: Array) -> Array:
+    """Per-motor thrust (N) at motor voltage v (V): the firmware's cubic c0 + c1 v + c2 v^2 + c3 v^3.
+
+    Scalar coefficients give the shape of v; per-world ones ((N, 1, 1, 4), v (N, 1, 1)) give (N, 1, 1), which
+    broadcasts against (N, M, 4) motor forces as crazyflow's other per-world coefficients do."""
+    c0, c1, c2, c3 = (vmotor2thrust[..., i] for i in range(4))
+    return c0 + (c1 + (c2 + c3 * v) * v) * v
+
+
 def force2pwm(thrust: Array | float, thrust_max: Array | float, pwm_max: Array | float) -> Array:
     """Convert thrust in N to thrust in PWM.
 

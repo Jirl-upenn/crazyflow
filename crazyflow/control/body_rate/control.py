@@ -29,7 +29,7 @@ from array_api_compat import device as xp_device
 from flax.struct import dataclass, field
 
 from crazyflow.control.core import controllable, load_params
-from crazyflow.control.transform import motor_force2rotor_vel
+from crazyflow.control.transform import motor_force2rotor_vel, vmotor2thrust_poly
 from crazyflow.utils import filter_to_signature, leaf_replace, to_xp
 
 if TYPE_CHECKING:
@@ -153,15 +153,24 @@ def power_distribution(
     mixing_matrix: Array,
     rpm2thrust: Array,
     thrust_min: float,
-    thrust_max: float,
+    vmotor2thrust: Array,
+    v_batt: float,
 ) -> Array:
     """Collective thrust and body torque -> rotor speeds: the body-rate controller's power distribution.
 
-    The X-configuration split of the force and torque into per-motor forces, each clipped to
-    ``[thrust_min, thrust_max]`` (a zero collective stops the motors), then the rotor speed at which ``rpm2thrust``
-    gives that force. This is the same mixer as
-    [force_torque2rotor_vel][crazyflow.control.mellinger.force_torque2rotor_vel]; it is a separate stage so the
-    CTBR path can follow the firmware's power distribution on its own.
+    The X-configuration split of the force and torque into per-motor forces, each limited to
+    ``[thrust_min, vmotor2thrust(v_batt)]`` (a zero collective stops the motors), then the rotor speed at which
+    ``rpm2thrust`` gives that force.
+
+    The ceiling is the firmware's battery-compensated one. The CTBR path (controller_pid's rate loop ->
+    powerDistributionLegacy) mixes per motor in int32 counts with no clip, and with
+    ``CONFIG_ENABLE_THRUST_BAT_COMPENSATED`` a count is a force request, ``count / 65535 * THRUST_MAX``:
+    ``motorsCompensateBatteryVoltage`` (motors.c) turns it into the motor voltage the voltage-to-thrust cubic needs,
+    as a ratio of the battery voltage, and ``powerDistributionCap`` caps that ratio at 1. A motor therefore gets
+    its request up to the thrust at full battery voltage, ``vmotor2thrust(v_batt)`` -- not ``THRUST_MAX``, which
+    only scales the counts. With the firmware's voltage estimate equal to ``v_batt``, the inversion and the
+    motor's voltage curve cancel exactly below the cap. Not modelled: sag under load, the firmware's 100 ms
+    voltage filter, the < 2 V cut-off.
 
     Warning:
         This function assumes an X rotor configuration.
@@ -174,7 +183,8 @@ def power_distribution(
         mixing_matrix: Mixing matrix for the motor forces with shape (3, 4).
         rpm2thrust: Thrust curve (N, N/RPM, N/RPM**2).
         thrust_min: Minimum motor force in N.
-        thrust_max: Maximum motor force in N.
+        vmotor2thrust: The firmware's VMOTOR2THRUST0..3 voltage-to-thrust cubic.
+        v_batt: Battery voltage in V.
 
     Returns:
         The rotor speeds in RPM with shape (..., 4).
@@ -185,7 +195,8 @@ def power_distribution(
     arm = L * xp.asarray([1.0, 1.0, 0.0]) + thrust2torque * xp.asarray([0.0, 0.0, 1.0])
     torque_forces = ((torque / arm)[..., None, :] @ mixing_matrix)[..., 0, :]
     motor_forces = (torque_forces + force) / 4
-    motor_forces = xp.where(force == 0, 0.0, xp.clip(motor_forces, thrust_min, thrust_max))
+    ceiling = vmotor2thrust_poly(xp.asarray(v_batt), vmotor2thrust)
+    motor_forces = xp.where(force == 0, 0.0, xp.clip(motor_forces, thrust_min, ceiling))
     return motor_force2rotor_vel(motor_forces, rpm2thrust)
 
 
