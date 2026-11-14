@@ -122,6 +122,10 @@ zero_thrust_reset = true
 #   v_batt          battery voltage under load. One value: the end of the pack, where the battery rather than
 #                   THRUST_MAX limits thrust, is out of scope (13 Nov 2026); above ~3.13 V (cf21B_500) it only sets
 #                   how far a single motor's request can exceed THRUST_MAX (0.27 N at 3.7 V)
+#   thrust_min      the firmware's THRUST_MIN: a request below it idles
+#   pwm_idle        powerDist.idleThrust, the idle ratio in 16-bit counts: CONFIG_MOTORS_DEFAULT_IDLE_THRUST = 7000 on the
+#                   brushless build (it requires arming; ~3.2 mN at 3.7 V); 0 on the brushed CF2 (no arming: idle
+#                   forced to 0, a stopped motor)
 # ---------------------------------------------------------------------------------------------------------------------
 
 [cf2x_L250.power_distribution]
@@ -136,6 +140,8 @@ rpm2thrust = [0.0, -5.382196214637237e-07, 2.4582929831265485e-10]
 thrust_min = 0.012817578393224994
 vmotor2thrust = [-0.014830744918356092, 0.04724465241828281, -0.01847364358025878, 0.005960923942142]
 v_batt = 3.7
+pwm_idle = 0.0
+pwm_max = 65535.0
 
 [cf2x_P250.power_distribution]
 L = 0.03253
@@ -149,6 +155,8 @@ rpm2thrust = [0.0, -3.6200226530383495e-07, 1.6060924304100328e-10]
 thrust_min = 0.012817578393224994
 vmotor2thrust = [-0.02476537915958403, 0.06523793527519485, -0.026792504967750107, 0.006776789303971145]
 v_batt = 3.7
+pwm_idle = 0.0
+pwm_max = 65535.0
 
 [cf2x_T350.power_distribution]
 L = 0.03253
@@ -162,6 +170,8 @@ rpm2thrust = [0.0, -7.167227176573658e-07, 2.9401303690194613e-10]
 thrust_min = 0.01922636758983749
 vmotor2thrust = [0.006728127583707208, 0.01011557616217668, 0.010263198062061085, 0.0028358638322392503]
 v_batt = 3.7
+pwm_idle = 0.0
+pwm_max = 65535.0
 
 [cf21B_500.power_distribution]
 L = 0.035355
@@ -175,3 +185,5 @@ rpm2thrust = [0.0, -3.133427287299859e-07, 4.407354891648379e-10]
 thrust_min = 0.02136263065537499
 vmotor2thrust = [-0.014058926705279723, 0.04265273261724981, 0.0018327760144017432, 0.0020576974784587178]
 v_batt = 3.7
+pwm_idle = 7000.0
+pwm_max = 65535.0

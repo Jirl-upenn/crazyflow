@@ -10,9 +10,60 @@ import pytest
 from crazyflow.control import Control, parametrize
 from crazyflow.control.body_rate import control_power_distribution, power_distribution
 from crazyflow.control.core import load_params
+from crazyflow.control.transform import compensated_motor_forces, vmotor2thrust_poly
 from crazyflow.drones import available_drones
 from crazyflow.dynamics import Dynamics
 from crazyflow.sim.sim import build_control_fns
+
+P = load_params(power_distribution, "cf21B_500")
+C = np.asarray(P["vmotor2thrust"], dtype=np.float64)
+UINT16_MAX = 65535.0
+
+
+def firmware_motor(f_req: np.ndarray, v_batt: float, pwm_idle: float) -> np.ndarray:
+    """The firmware's own path, transcribed: motorsCompensateBatteryVoltage (motors.c, Cardano inverse of the
+    voltage cubic, ratio = voltage / supply) on the force request, powerDistributionCap's [idle, UINT16_MAX] cap,
+    then the motor's voltage curve at ratio * supply."""
+    thrust_min = float(P["thrust_min"])
+    p = -C[2] / (3 * C[3])
+    r = C[1] / (3 * C[3])
+    q = p**3 + (C[2] * C[1] - 3 * C[3] * (C[0] - f_req)) / (6 * C[3] ** 2)
+    qrp = np.sqrt(q * q + (r - p * p) ** 3)
+    v_motor = np.cbrt(q + qrp) + np.cbrt(q - qrp) + p
+    ratio = np.where(f_req < thrust_min, 0.0, UINT16_MAX * v_motor / v_batt)
+    ratio = np.clip(ratio, pwm_idle, UINT16_MAX)
+    v = ratio / UINT16_MAX * v_batt
+    return C[0] + C[1] * v + C[2] * v**2 + C[3] * v**3
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("v_batt", [3.3, 3.7, 4.1])
+def test_compensated_cap_matches_firmware(v_batt: float):
+    """Delivered force = the firmware's compensate -> cap -> motor chain, over requests from negative to beyond
+    the battery ceiling (the legacy mixer does not clip before compensation)."""
+    f_req = np.linspace(-0.05, 0.45, 5001)
+    ref = firmware_motor(f_req, v_batt, float(P["pwm_idle"]))
+    out = compensated_motor_forces(
+        f_req, thrust_min=P["thrust_min"], vmotor2thrust=P["vmotor2thrust"], v_batt=v_batt,
+        pwm_idle=P["pwm_idle"], pwm_max=P["pwm_max"],
+    )
+    np.testing.assert_allclose(out, ref, rtol=0, atol=1e-9)
+
+
+@pytest.mark.unit
+def test_idle_and_ceiling_values():
+    """cf21B_500 at 3.7 V: idle (7000 counts of the supply) ~3.2 mN, ceiling (full ratio) ~0.273 N; a request
+    inside [THRUST_MIN, ceiling] is delivered exactly."""
+    f = compensated_motor_forces(
+        np.array([-1.0, 0.0, 0.02, 0.0214, 0.1, 0.2, 0.25, 1.0]), thrust_min=P["thrust_min"],
+        vmotor2thrust=P["vmotor2thrust"], v_batt=3.7, pwm_idle=P["pwm_idle"], pwm_max=P["pwm_max"],
+    )
+    idle = vmotor2thrust_poly(7000.0 / 65535.0 * 3.7, C)
+    ceil = vmotor2thrust_poly(np.float64(3.7), C)
+    np.testing.assert_allclose(f[:3], idle)
+    np.testing.assert_allclose(f[3:7], [0.0214, 0.1, 0.2, 0.25])
+    np.testing.assert_allclose(f[7], ceil)
+    assert 0.003 < idle < 0.0035 and 0.27 < ceil < 0.28
 
 
 def _rpm(f: float, rpm2thrust) -> float:
@@ -58,17 +109,20 @@ def test_body_rate_pipeline_uses_power_distribution():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("drone", available_drones)
-def test_matches_shared_mixer_below_thrust_max(drone: str):
-    """Where no motor asks for more than THRUST_MAX the shared mixer and the power distribution agree."""
+def test_matches_shared_mixer_inside_the_motor_range(drone: str):
+    """Where every motor asks for a force in [THRUST_MIN, THRUST_MAX] (or the collective is zero) the shared mixer
+    and the power distribution agree."""
     from crazyflow.control.mellinger import force_torque2rotor_vel
 
     pd = parametrize(power_distribution, drone)
     ft = parametrize(force_torque2rotor_vel, drone)
     thrust_max = float(load_params(force_torque2rotor_vel, drone)["thrust_max"])
+    thrust_min = float(load_params(force_torque2rotor_vel, drone)["thrust_min"])
     rng = np.random.default_rng(0)
-    force = rng.uniform(0.0, 2.0 * thrust_max, (512, 1))
+    # every motor inside [THRUST_MIN, THRUST_MAX] (torques small enough), and zero collectives
+    force = rng.uniform(4.0 * (thrust_min + 0.006), 2.0 * thrust_max, (512, 1))
     force[:16] = 0.0
-    torque = rng.uniform(-1e-3, 1e-3, (512, 3))
+    torque = rng.uniform(-5e-5, 5e-5, (512, 3))
     np.testing.assert_allclose(pd(force, torque), ft(force, torque), rtol=1e-6)
 
 
@@ -88,3 +142,31 @@ def test_ceiling_is_battery_compensated():
         d = want - 0.12
         rpm = pd(np.array([0.48]), np.array([2 * d * L, 2 * d * L, 0.0]))
         np.testing.assert_allclose(rpm[2], _rpm(min(want, ceiling), p["rpm2thrust"]), rtol=1e-5)
+
+
+@pytest.mark.unit
+def test_floor_idles():
+    """cf21B_500: a motor asked for less than THRUST_MIN idles at powerDist.idleThrust = 7000 counts of the
+    supply (~3.2 mN at 3.7 V), whatever the request, instead of being raised to THRUST_MIN."""
+    pd = parametrize(power_distribution, "cf21B_500")
+    L = float(P["L"])
+    idle_rpm = _rpm(vmotor2thrust_poly(7000.0 / 65535.0 * 3.7, C), P["rpm2thrust"])
+    for want in (0.015, 0.0, -0.05):
+        # equal roll and pitch torques lower motor 0 (mixing column 0: -roll, -pitch) by d under the 0.1 N base
+        d = 0.1 - want
+        rpm = pd(np.array([0.4]), np.array([2 * d * L, 2 * d * L, 0.0]))
+        np.testing.assert_allclose(rpm[0], idle_rpm, rtol=1e-5)
+    rpm = pd(np.array([0.4]), np.array([2 * 0.07 * L, 2 * 0.07 * L, 0.0]))     # 0.03 N: delivered
+    np.testing.assert_allclose(rpm[0], _rpm(0.03, P["rpm2thrust"]), rtol=1e-5)
+
+
+@pytest.mark.unit
+def test_floor_stops_a_motor_without_idle():
+    """The brushed CF2 has no idle (no arming): a motor asked for less than THRUST_MIN stops -- 0 rpm, not the
+    thrust curve's other zero nor the voltage cubic's negative value at 0 V."""
+    p = load_params(power_distribution, "cf2x_L250")
+    assert float(p["pwm_idle"]) == 0.0
+    pd = parametrize(power_distribution, "cf2x_L250")
+    L = float(p["L"])
+    rpm = pd(np.array([0.3]), np.array([2 * 0.07 * L, 2 * 0.07 * L, 0.0]))     # motor 0: 0.075 - 0.07 < THRUST_MIN
+    assert float(rpm[0]) == 0.0 and np.all(rpm[1:] > 0)

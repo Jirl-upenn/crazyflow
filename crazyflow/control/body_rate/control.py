@@ -29,7 +29,7 @@ from array_api_compat import device as xp_device
 from flax.struct import dataclass, field
 
 from crazyflow.control.core import controllable, load_params
-from crazyflow.control.transform import motor_force2rotor_vel, vmotor2thrust_poly
+from crazyflow.control.transform import compensated_rotor_vel, motor_force2rotor_vel
 from crazyflow.utils import filter_to_signature, leaf_replace, to_xp
 
 if TYPE_CHECKING:
@@ -155,12 +155,17 @@ def power_distribution(
     thrust_min: float,
     vmotor2thrust: Array,
     v_batt: float,
+    pwm_idle: float,
+    pwm_max: float,
 ) -> Array:
     """Collective thrust and body torque -> rotor speeds: the body-rate controller's power distribution.
 
-    The X-configuration split of the force and torque into per-motor forces, each limited to
-    ``[thrust_min, vmotor2thrust(v_batt)]`` (a zero collective stops the motors), then the rotor speed at which
-    ``rpm2thrust`` gives that force.
+    The X-configuration split of the force and torque into per-motor force requests, each delivered through the
+    firmware's battery-compensated cap
+    ([compensated_rotor_vel][crazyflow.control.transform.compensated_rotor_vel]): a request below ``thrust_min``
+    idles, any other is delivered up to ``vmotor2thrust(v_batt)``; a zero collective still gives every motor
+    force 0, as the shared mixer does. The rotor
+    speed is the one at which ``rpm2thrust`` gives the delivered force (0 for a motor that delivers nothing).
 
     The ceiling is the firmware's battery-compensated one. The CTBR path (controller_pid's rate loop ->
     powerDistributionLegacy) mixes per motor in int32 counts with no clip, and with
@@ -171,6 +176,10 @@ def power_distribution(
     only scales the counts. With the firmware's voltage estimate equal to ``v_batt``, the inversion and the
     motor's voltage curve cancel exactly below the cap. Not modelled: sag under load, the firmware's 100 ms
     voltage filter, the < 2 V cut-off.
+
+    The floor is the firmware's too: below ``THRUST_MIN`` (where the cubic's inverse stops being unique)
+    compensation gives ratio 0, which the cap raises to ``powerDist.idleThrust``, so the motor idles at
+    ``vmotor2thrust(pwm_idle / pwm_max * v_batt)`` rather than delivering ``thrust_min``.
 
     Warning:
         This function assumes an X rotor configuration.
@@ -185,6 +194,8 @@ def power_distribution(
         thrust_min: Minimum motor force in N.
         vmotor2thrust: The firmware's VMOTOR2THRUST0..3 voltage-to-thrust cubic.
         v_batt: Battery voltage in V.
+        pwm_idle: Idle motor ratio in 16-bit counts (powerDist.idleThrust).
+        pwm_max: Full-scale 16-bit count.
 
     Returns:
         The rotor speeds in RPM with shape (..., 4).
@@ -194,10 +205,15 @@ def power_distribution(
     assert force.shape[-1] == 1, f"Force must have shape (..., 1), but has {force.shape}"
     arm = L * xp.asarray([1.0, 1.0, 0.0]) + thrust2torque * xp.asarray([0.0, 0.0, 1.0])
     torque_forces = ((torque / arm)[..., None, :] @ mixing_matrix)[..., 0, :]
-    motor_forces = (torque_forces + force) / 4
-    ceiling = vmotor2thrust_poly(xp.asarray(v_batt), vmotor2thrust)
-    motor_forces = xp.where(force == 0, 0.0, xp.clip(motor_forces, thrust_min, ceiling))
-    return motor_force2rotor_vel(motor_forces, rpm2thrust)
+    requested = (torque_forces + force) / 4
+    rpm = compensated_rotor_vel(
+        requested, rpm2thrust=rpm2thrust, thrust_min=thrust_min, vmotor2thrust=vmotor2thrust, v_batt=v_batt,
+        pwm_idle=pwm_idle, pwm_max=pwm_max,
+    )
+    # Zero collective: the motor force 0 of the shared mixer, as before (at that force rpm2thrust's inverse is its
+    # other zero, ~711 rpm on the cf21B_500 -- no thrust).
+    off = motor_force2rotor_vel(xp.zeros_like(requested), rpm2thrust)
+    return xp.where(force == 0, off, rpm)
 
 
 @dataclass

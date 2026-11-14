@@ -88,6 +88,84 @@ def vmotor2thrust_poly(v: Array, vmotor2thrust: Array) -> Array:
     return c0 + (c1 + (c2 + c3 * v) * v) * v
 
 
+def compensated_motor_forces(
+    motor_forces: Array,
+    *,
+    thrust_min: Array | float,
+    vmotor2thrust: Array,
+    v_batt: Array | float,
+    pwm_idle: Array | float,
+    pwm_max: Array | float,
+) -> Array:
+    """The force each motor delivers for a requested force, through the firmware's battery compensation and cap.
+
+    The Crazyflie firmware with ``CONFIG_ENABLE_THRUST_BAT_COMPENSATED`` reads every motor value as a force
+    request and turns it into a motor-voltage ratio (``motorsCompensateBatteryVoltage``, motors.c), then caps the
+    ratio per motor to ``[idle, 1]`` (``powerDistributionCap``, power_distribution_quadrotor.c):
+
+    * a request below ``thrust_min`` (where the inverse of the voltage curve stops being unique) gets ratio 0,
+      which the cap raises to the idle ratio ``pwm_idle / pwm_max``: the motor idles at
+      ``vmotor2thrust(pwm_idle / pwm_max * v_batt)``;
+    * any other request gets the voltage the inverted cubic gives, divided by the battery voltage; a ratio above 1
+      is capped, so the motor delivers ``min(request, vmotor2thrust(v_batt))``.
+
+    The firmware's ratio for a request ``f >= thrust_min`` always lies above the idle ratio (its voltage is at
+    least the one ``thrust_min`` needs, which exceeds the idle voltage), so the idle cap only acts below
+    ``thrust_min``. With the firmware's voltage estimate equal to ``v_batt`` the inversion and the motor's own
+    voltage curve cancel exactly, and this closed form is the firmware's result without evaluating the Cardano
+    inverse (whose cube roots have an infinite derivative at 0). Not modelled: battery sag under load and the
+    firmware's 100 ms voltage filter (the estimate lagging the true voltage), and the < 2 V cut-off.
+
+    A zero idle ratio stops the motor: it delivers 0 N, not the cubic's negative value at 0 V.
+
+    Args:
+        motor_forces: Requested per-motor forces in N with shape (..., 4); any sign or size (the firmware's
+            legacy and force-torque mixers do not clip before compensation).
+        thrust_min: The firmware's THRUST_MIN in N.
+        vmotor2thrust: The firmware's VMOTOR2THRUST0..3 voltage-to-thrust cubic, indexed on the last axis.
+        v_batt: Battery voltage in V.
+        pwm_idle: The idle motor ratio in 16-bit counts (powerDist.idleThrust; 0 when the build needs no arming).
+        pwm_max: Full-scale 16-bit count, 65535.
+
+    Returns:
+        The delivered per-motor forces in N with the shape of ``motor_forces``.
+    """
+    xp = array_namespace(motor_forces)
+    # A stopped motor (ratio 0: no idle, as on the brushed CF2) delivers nothing; the cubic is a fit over the
+    # flying range and goes negative near 0 V.
+    f_idle = xp.maximum(vmotor2thrust_poly(pwm_idle / pwm_max * v_batt, vmotor2thrust), 0.0)
+    f_ceil = vmotor2thrust_poly(xp.asarray(v_batt), vmotor2thrust)
+    # Scalar coefficients give scalars; per-world ones ((N, 1, 1, 4), v_batt (N, 1, 1)) give (N, 1, 1), which
+    # broadcasts against the (N, M, 4) forces as crazyflow's other per-world coefficients do.
+    return xp.where(motor_forces < thrust_min, f_idle, xp.minimum(motor_forces, f_ceil))
+
+
+def compensated_rotor_vel(
+    motor_forces: Array,
+    *,
+    rpm2thrust: Array,
+    thrust_min: Array | float,
+    vmotor2thrust: Array,
+    v_batt: Array | float,
+    pwm_idle: Array | float,
+    pwm_max: Array | float,
+) -> Array:
+    """Requested per-motor forces -> the rotor speeds (RPM) the firmware's compensated motor path drives.
+
+    [compensated_motor_forces][crazyflow.control.transform.compensated_motor_forces], then the rotor speed at
+    which ``rpm2thrust`` (the controller's, nominal, thrust curve: the motor's voltage-to-speed response) gives
+    the delivered force. A motor that delivers nothing is stopped, at 0 rpm rather than the thrust curve's other
+    zero; the inverse is evaluated on a non-negative force so that branch stays finite under differentiation.
+    """
+    xp = array_namespace(motor_forces)
+    delivered = compensated_motor_forces(
+        motor_forces, thrust_min=thrust_min, vmotor2thrust=vmotor2thrust, v_batt=v_batt, pwm_idle=pwm_idle,
+        pwm_max=pwm_max,
+    )
+    rpm = motor_force2rotor_vel(xp.maximum(delivered, 0.0), rpm2thrust)
+    return xp.where(delivered > 0.0, rpm, 0.0)
+
+
 def force2pwm(thrust: Array | float, thrust_max: Array | float, pwm_max: Array | float) -> Array:
     """Convert thrust in N to thrust in PWM.
 
