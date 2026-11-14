@@ -88,6 +88,23 @@ def vmotor2thrust_poly(v: Array, vmotor2thrust: Array) -> Array:
     return c0 + (c1 + (c2 + c3 * v) * v) * v
 
 
+def vmotor2thrust_inverse(f: Array, vmotor2thrust: Array) -> Array:
+    """Motor voltage (V) at which the firmware's cubic gives thrust f (N): motorsCompensateBatteryVoltage's Cardano
+    inverse (motors.c), for f >= THRUST_MIN where it is unique. The two cube-root arguments are q +/- qrp with
+    qrp > |q| whenever r > p^2, as for every Crazyflie fit, so neither reaches 0 and the derivative stays finite."""
+    xp = array_namespace(f)
+    c0, c1, c2, c3 = (vmotor2thrust[..., i] for i in range(4))
+    p = -c2 / (3 * c3)
+    r = c1 / (3 * c3)
+    q = p * p * p + (c2 * c1 - 3 * c3 * (c0 - f)) / (6 * c3 * c3)
+    qrp = xp.sqrt(q * q + (r - p * p) ** 3)
+
+    def cbrt(x):
+        return xp.sign(x) * xp.abs(x) ** (1.0 / 3.0)
+
+    return cbrt(q + qrp) + cbrt(q - qrp) + p
+
+
 def compensated_motor_forces(
     motor_forces: Array,
     *,
@@ -97,30 +114,28 @@ def compensated_motor_forces(
     pwm_idle: Array | float,
     pwm_max: Array | float,
 ) -> Array:
-    """The force each motor delivers for a requested force, through the firmware's battery compensation and cap.
+    """The force each motor delivers for requested forces, through the firmware's battery compensation and cap.
 
     The Crazyflie firmware with ``CONFIG_ENABLE_THRUST_BAT_COMPENSATED`` reads every motor value as a force
     request and turns it into a motor-voltage ratio (``motorsCompensateBatteryVoltage``, motors.c), then caps the
-    ratio per motor to ``[idle, 1]`` (``powerDistributionCap``, power_distribution_quadrotor.c):
+    four ratios together (``powerDistributionCap``, power_distribution_quadrotor.c, upstream since d92c7205):
 
-    * a request below ``thrust_min`` (where the inverse of the voltage curve stops being unique) gets ratio 0,
-      which the cap raises to the idle ratio ``pwm_idle / pwm_max``: the motor idles at
-      ``vmotor2thrust(pwm_idle / pwm_max * v_batt)``;
-    * any other request gets the voltage the inverted cubic gives, divided by the battery voltage; a ratio above 1
-      is capped, so the motor delivers ``min(request, vmotor2thrust(v_batt))``.
+    * a request below ``thrust_min`` (where the inverse of the voltage curve stops being unique) gets ratio 0;
+    * any other request gets the voltage the inverted cubic gives, divided by the battery voltage;
+    * if the largest ratio exceeds 1, its excess is subtracted from all four ratios (attitude authority is kept,
+      collective thrust is shed), and every ratio below the idle ratio ``pwm_idle / pwm_max`` is raised to it.
 
-    The firmware's ratio for a request ``f >= thrust_min`` always lies above the idle ratio (its voltage is at
-    least the one ``thrust_min`` needs, which exceeds the idle voltage), so the idle cap only acts below
-    ``thrust_min``. With the firmware's voltage estimate equal to ``v_batt`` the inversion and the motor's own
-    voltage curve cancel exactly, and this closed form is the firmware's result without evaluating the Cardano
-    inverse (whose cube roots have an infinite derivative at 0). Not modelled: battery sag under load and the
-    firmware's 100 ms voltage filter (the estimate lagging the true voltage), and the < 2 V cut-off.
+    The motor then delivers ``vmotor2thrust(ratio * v_batt)``. Without a cap that is the request itself (or the
+    idle thrust below ``thrust_min``): with the firmware's voltage estimate equal to ``v_batt`` the inversion and
+    the motor's own voltage curve cancel exactly, so the uncapped case is evaluated in closed form and the
+    Cardano inverse only where the cap acts. Not modelled: battery sag under load and the firmware's 100 ms
+    voltage filter (the estimate lagging the true voltage), and the < 2 V cut-off.
 
     A zero idle ratio stops the motor: it delivers 0 N, not the cubic's negative value at 0 V.
 
     Args:
         motor_forces: Requested per-motor forces in N with shape (..., 4); any sign or size (the firmware's
-            legacy and force-torque mixers do not clip before compensation).
+            legacy and force-torque mixers do not clip before compensation). The cap couples the last axis.
         thrust_min: The firmware's THRUST_MIN in N.
         vmotor2thrust: The firmware's VMOTOR2THRUST0..3 voltage-to-thrust cubic, indexed on the last axis.
         v_batt: Battery voltage in V.
@@ -131,13 +146,22 @@ def compensated_motor_forces(
         The delivered per-motor forces in N with the shape of ``motor_forces``.
     """
     xp = array_namespace(motor_forces)
-    # A stopped motor (ratio 0: no idle, as on the brushed CF2) delivers nothing; the cubic is a fit over the
-    # flying range and goes negative near 0 V.
-    f_idle = xp.maximum(vmotor2thrust_poly(pwm_idle / pwm_max * v_batt, vmotor2thrust), 0.0)
-    f_ceil = vmotor2thrust_poly(xp.asarray(v_batt), vmotor2thrust)
     # Scalar coefficients give scalars; per-world ones ((N, 1, 1, 4), v_batt (N, 1, 1)) give (N, 1, 1), which
     # broadcasts against the (N, M, 4) forces as crazyflow's other per-world coefficients do.
-    return xp.where(motor_forces < thrust_min, f_idle, xp.minimum(motor_forces, f_ceil))
+    v_batt = xp.asarray(v_batt)
+    v_idle = pwm_idle / pwm_max * v_batt
+    # A stopped motor (ratio 0: no idle, as on the brushed CF2) delivers nothing; the cubic is a fit over the
+    # flying range and goes negative near 0 V.
+    f_idle = xp.maximum(vmotor2thrust_poly(v_idle, vmotor2thrust), 0.0)
+    on = motor_forces >= thrust_min
+    # requested motor voltages (ratio * v_batt); the inverse sees only forces where it is unique
+    v = xp.where(on, vmotor2thrust_inverse(xp.where(on, motor_forces, thrust_min), vmotor2thrust), 0.0)
+    over = xp.max(v, axis=-1, keepdims=True) - v_batt                  # the largest ratio's excess, in volts
+    capped = over > 0.0
+    v_capped = xp.maximum(v - xp.where(capped, over, 0.0), v_idle)
+    f_capped = xp.maximum(vmotor2thrust_poly(v_capped, vmotor2thrust), 0.0)
+    f_free = xp.where(on, motor_forces, f_idle)
+    return xp.where(capped, f_capped, f_free)
 
 
 def compensated_rotor_vel(

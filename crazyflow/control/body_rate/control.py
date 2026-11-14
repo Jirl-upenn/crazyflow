@@ -160,10 +160,12 @@ def power_distribution(
 ) -> Array:
     """Collective thrust and body torque -> rotor speeds: the body-rate controller's power distribution.
 
-    The X-configuration split of the force and torque into per-motor force requests, each delivered through the
+    The X-configuration split of the force and torque into per-motor force requests, delivered through the
     firmware's battery-compensated cap
     ([compensated_rotor_vel][crazyflow.control.transform.compensated_rotor_vel]): a request below ``thrust_min``
-    idles, any other is delivered up to ``vmotor2thrust(v_batt)``. There is no separate zero-collective case:
+    idles, any other is delivered as asked unless a motor needs more than ``vmotor2thrust(v_batt)``, in which
+    case all four motors are reduced together (upstream's powerDistributionCap). There is no separate
+    zero-collective case:
     as in the armed firmware, a zero collective (the rate stage then zeroes the torque) idles every motor. The rotor
     speed is the one at which ``rpm2thrust`` gives the delivered force (0 for a motor that delivers nothing).
 
@@ -171,9 +173,9 @@ def power_distribution(
     powerDistributionLegacy) mixes per motor in int32 counts with no clip, and with
     ``CONFIG_ENABLE_THRUST_BAT_COMPENSATED`` a count is a force request, ``count / 65535 * THRUST_MAX``:
     ``motorsCompensateBatteryVoltage`` (motors.c) turns it into the motor voltage the voltage-to-thrust cubic needs,
-    as a ratio of the battery voltage, and ``powerDistributionCap`` caps that ratio at 1. A motor therefore gets
-    its request up to the thrust at full battery voltage, ``vmotor2thrust(v_batt)`` -- not ``THRUST_MAX``, which
-    only scales the counts. With the firmware's voltage estimate equal to ``v_batt``, the inversion and the
+    as a ratio of the battery voltage, and ``powerDistributionCap`` caps the largest ratio at 1 by subtracting its
+    excess from all four ratios (upstream d92c7205: torque kept, collective shed). The ceiling is therefore the
+    thrust at full battery voltage, ``vmotor2thrust(v_batt)`` -- not ``THRUST_MAX``, which only scales the counts. With the firmware's voltage estimate equal to ``v_batt``, the inversion and the
     motor's voltage curve cancel exactly below the cap. Not modelled: sag under load, the firmware's 100 ms
     voltage filter, the < 2 V cut-off.
 

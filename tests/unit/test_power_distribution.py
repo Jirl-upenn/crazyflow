@@ -22,9 +22,10 @@ UINT16_MAX = 65535.0
 
 
 def firmware_motor(f_req: np.ndarray, v_batt: float, pwm_idle: float) -> np.ndarray:
-    """The firmware's own path, transcribed: motorsCompensateBatteryVoltage (motors.c, Cardano inverse of the
-    voltage cubic, ratio = voltage / supply) on the force request, powerDistributionCap's [idle, UINT16_MAX] cap,
-    then the motor's voltage curve at ratio * supply."""
+    """The firmware's own path, transcribed, for requests (..., n_motors): motorsCompensateBatteryVoltage (motors.c,
+    Cardano inverse of the voltage cubic, ratio = voltage / supply) on each request, upstream powerDistributionCap
+    (the highest ratio's excess over UINT16_MAX subtracted from every motor, then capMinThrust to idle), then the
+    motor's voltage curve at ratio * supply."""
     thrust_min = float(P["thrust_min"])
     p = -C[2] / (3 * C[3])
     r = C[1] / (3 * C[3])
@@ -32,7 +33,8 @@ def firmware_motor(f_req: np.ndarray, v_batt: float, pwm_idle: float) -> np.ndar
     qrp = np.sqrt(q * q + (r - p * p) ** 3)
     v_motor = np.cbrt(q + qrp) + np.cbrt(q - qrp) + p
     ratio = np.where(f_req < thrust_min, 0.0, UINT16_MAX * v_motor / v_batt)
-    ratio = np.clip(ratio, pwm_idle, UINT16_MAX)
+    highest = np.maximum(ratio.max(-1, keepdims=True), 0.0)
+    ratio = np.maximum(ratio - np.maximum(highest - UINT16_MAX, 0.0), pwm_idle)
     v = ratio / UINT16_MAX * v_batt
     return C[0] + C[1] * v + C[2] * v**2 + C[3] * v**3
 
@@ -40,9 +42,9 @@ def firmware_motor(f_req: np.ndarray, v_batt: float, pwm_idle: float) -> np.ndar
 @pytest.mark.unit
 @pytest.mark.parametrize("v_batt", [3.3, 3.7, 4.1])
 def test_compensated_cap_matches_firmware(v_batt: float):
-    """Delivered force = the firmware's compensate -> cap -> motor chain, over requests from negative to beyond
-    the battery ceiling (the legacy mixer does not clip before compensation)."""
-    f_req = np.linspace(-0.05, 0.45, 5001)
+    """Delivered force = the firmware's compensate -> cap -> motor chain, one motor at a time, over requests from
+    negative to beyond the battery ceiling (the legacy mixer does not clip before compensation)."""
+    f_req = np.linspace(-0.05, 0.45, 5001)[:, None]
     ref = firmware_motor(f_req, v_batt, float(P["pwm_idle"]))
     out = compensated_motor_forces(
         f_req, thrust_min=P["thrust_min"], vmotor2thrust=P["vmotor2thrust"], v_batt=v_batt,
@@ -52,15 +54,36 @@ def test_compensated_cap_matches_firmware(v_batt: float):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("v_batt", [3.3, 3.7, 4.1])
+def test_uniform_reduction_matches_firmware(v_batt: float):
+    """Four coupled motors: when one asks for more than the battery gives, every motor's ratio drops by the same
+    excess (upstream powerDistributionCap), the rest of the floor and idle behaviour unchanged."""
+    rng = np.random.default_rng(1)
+    f_req = rng.uniform(-0.05, 0.45, (4096, 4))
+    ref = firmware_motor(f_req, v_batt, float(P["pwm_idle"]))
+    out = compensated_motor_forces(
+        f_req, thrust_min=P["thrust_min"], vmotor2thrust=P["vmotor2thrust"], v_batt=v_batt,
+        pwm_idle=P["pwm_idle"], pwm_max=P["pwm_max"],
+    )
+    np.testing.assert_allclose(out, ref, rtol=0, atol=1e-9)
+    ceil = vmotor2thrust_poly(np.float64(v_batt), C)
+    capped = f_req.max(-1) > ceil
+    assert 0.1 < capped.mean() < 0.95
+    np.testing.assert_allclose(out[capped].max(-1), ceil, rtol=1e-9)          # the top motor sits at the ceiling
+    np.testing.assert_allclose(out[~capped], np.where(f_req[~capped] < P["thrust_min"], ref[~capped], f_req[~capped]))
+
+
+@pytest.mark.unit
 def test_idle_and_ceiling_values():
     """cf21B_500 at 3.7 V: idle (7000 counts of the supply) ~3.2 mN, ceiling (full ratio) ~0.273 N; a request
     inside [THRUST_MIN, ceiling] is delivered exactly."""
     f = compensated_motor_forces(
-        np.array([-1.0, 0.0, 0.02, 0.0214, 0.1, 0.2, 0.25, 1.0]), thrust_min=P["thrust_min"],
+        np.array([-1.0, 0.0, 0.02, 0.0214, 0.1, 0.2, 0.25, 1.0])[:, None], thrust_min=P["thrust_min"],
         vmotor2thrust=P["vmotor2thrust"], v_batt=3.7, pwm_idle=P["pwm_idle"], pwm_max=P["pwm_max"],
     )
     idle = vmotor2thrust_poly(7000.0 / 65535.0 * 3.7, C)
     ceil = vmotor2thrust_poly(np.float64(3.7), C)
+    f = f[:, 0]
     np.testing.assert_allclose(f[:3], idle)
     np.testing.assert_allclose(f[3:7], [0.0214, 0.1, 0.2, 0.25])
     np.testing.assert_allclose(f[7], ceil)
@@ -129,8 +152,9 @@ def test_matches_shared_mixer_inside_the_motor_range(drone: str):
 
 @pytest.mark.unit
 def test_ceiling_is_battery_compensated():
-    """cf21B_500 at 3.7 V: a single motor gets its request beyond THRUST_MAX = 0.2 N up to the thrust at full
-    battery voltage, vmotor2thrust(3.7) = 0.273 N (the legacy mixer does not clip before compensation)."""
+    """cf21B_500 at 3.7 V: a motor gets its request beyond THRUST_MAX = 0.2 N up to the thrust at full battery
+    voltage, vmotor2thrust(3.7) = 0.273 N (the legacy mixer does not clip before compensation); past it, all four
+    motors are reduced together and the top one sits at the ceiling."""
     p = load_params(power_distribution, "cf21B_500")
     c = np.asarray(p["vmotor2thrust"], dtype=np.float64)
     ceiling = c[0] + c[1] * 3.7 + c[2] * 3.7**2 + c[3] * 3.7**3
@@ -138,11 +162,14 @@ def test_ceiling_is_battery_compensated():
     pd = parametrize(power_distribution, "cf21B_500")
     L = float(p["L"])
     for want in (0.25, 0.4):
-        # equal roll and pitch torques raise motor 2 (mixing column 2: +roll, +pitch) by d over the 0.12 N base:
-        # each splits as tau / L across the four columns, then / 4
+        # equal roll and pitch torques move motor 2 (mixing column 2: +roll, +pitch) by +d and motor 0 by -d over the
+        # 0.12 N base: each splits as tau / L across the four columns, then / 4
         d = want - 0.12
         rpm = pd(np.array([0.48]), np.array([2 * d * L, 2 * d * L, 0.0]))
-        np.testing.assert_allclose(rpm[2], _rpm(min(want, ceiling), p["rpm2thrust"]), rtol=1e-5)
+        req = np.array([0.12 - d, 0.12, 0.12 + d, 0.12])
+        f = firmware_motor(req, 3.7, float(p["pwm_idle"]))
+        np.testing.assert_allclose(rpm, [_rpm(x, p["rpm2thrust"]) for x in f], rtol=1e-5)
+        assert np.isclose(f[2], min(want, ceiling)) and (want < ceiling) == np.isclose(f[1], 0.12)
 
 
 @pytest.mark.unit
