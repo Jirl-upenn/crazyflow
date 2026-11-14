@@ -13,6 +13,7 @@ from crazyflow.control.core import load_params
 from crazyflow.control.transform import compensated_motor_forces, vmotor2thrust_poly
 from crazyflow.drones import available_drones
 from crazyflow.dynamics import Dynamics
+from crazyflow.sim import Sim
 from crazyflow.sim.sim import build_control_fns
 
 P = load_params(power_distribution, "cf21B_500")
@@ -110,8 +111,8 @@ def test_body_rate_pipeline_uses_power_distribution():
 @pytest.mark.unit
 @pytest.mark.parametrize("drone", available_drones)
 def test_matches_shared_mixer_inside_the_motor_range(drone: str):
-    """Where every motor asks for a force in [THRUST_MIN, THRUST_MAX] (or the collective is zero) the shared mixer
-    and the power distribution agree."""
+    """Where every motor asks for a force in [THRUST_MIN, THRUST_MAX] the shared mixer and the power distribution
+    agree."""
     from crazyflow.control.mellinger import force_torque2rotor_vel
 
     pd = parametrize(power_distribution, drone)
@@ -119,9 +120,8 @@ def test_matches_shared_mixer_inside_the_motor_range(drone: str):
     thrust_max = float(load_params(force_torque2rotor_vel, drone)["thrust_max"])
     thrust_min = float(load_params(force_torque2rotor_vel, drone)["thrust_min"])
     rng = np.random.default_rng(0)
-    # every motor inside [THRUST_MIN, THRUST_MAX] (torques small enough), and zero collectives
+    # every motor inside [THRUST_MIN, THRUST_MAX] (torques small enough)
     force = rng.uniform(4.0 * (thrust_min + 0.006), 2.0 * thrust_max, (512, 1))
-    force[:16] = 0.0
     torque = rng.uniform(-5e-5, 5e-5, (512, 3))
     np.testing.assert_allclose(pd(force, torque), ft(force, torque), rtol=1e-6)
 
@@ -170,3 +170,23 @@ def test_floor_stops_a_motor_without_idle():
     L = float(p["L"])
     rpm = pd(np.array([0.3]), np.array([2 * 0.07 * L, 2 * 0.07 * L, 0.0]))     # motor 0: 0.075 - 0.07 < THRUST_MIN
     assert float(rpm[0]) == 0.0 and np.all(rpm[1:] > 0)
+
+
+@pytest.mark.unit
+def test_zero_thrust_idles():
+    """Zero collective (the rate stage then zeroes the torque) idles every motor, as the armed firmware does,
+    instead of the shared mixer's motor force 0."""
+    pd = parametrize(power_distribution, "cf21B_500")
+    rpm = pd(np.zeros(1), np.zeros(3))
+    idle = vmotor2thrust_poly(7000.0 / 65535.0 * 3.7, C)
+    np.testing.assert_allclose(rpm, _rpm(idle, P["rpm2thrust"]), rtol=1e-6)
+
+
+@pytest.mark.unit
+def test_sim_zero_thrust_idles():
+    """Through the sim: a zero-thrust body-rate command holds the rotors at idle (~3.1k rpm on the cf21B_500)."""
+    sim = Sim(dynamics=Dynamics.first_principles, control=Control.body_rate, drone="cf21B_500", freq=500)
+    sim.reset()
+    sim.body_rate_control(np.zeros((1, 1, 4), dtype=np.float32))
+    sim.step(1)
+    assert float(jnp.min(sim.data.controls.rotor_vel)) > 3000.0

@@ -29,7 +29,7 @@ from array_api_compat import device as xp_device
 from flax.struct import dataclass, field
 
 from crazyflow.control.core import controllable, load_params
-from crazyflow.control.transform import compensated_rotor_vel, motor_force2rotor_vel
+from crazyflow.control.transform import compensated_rotor_vel
 from crazyflow.utils import filter_to_signature, leaf_replace, to_xp
 
 if TYPE_CHECKING:
@@ -163,8 +163,8 @@ def power_distribution(
     The X-configuration split of the force and torque into per-motor force requests, each delivered through the
     firmware's battery-compensated cap
     ([compensated_rotor_vel][crazyflow.control.transform.compensated_rotor_vel]): a request below ``thrust_min``
-    idles, any other is delivered up to ``vmotor2thrust(v_batt)``; a zero collective still gives every motor
-    force 0, as the shared mixer does. The rotor
+    idles, any other is delivered up to ``vmotor2thrust(v_batt)``. There is no separate zero-collective case:
+    as in the armed firmware, a zero collective (the rate stage then zeroes the torque) idles every motor. The rotor
     speed is the one at which ``rpm2thrust`` gives the delivered force (0 for a motor that delivers nothing).
 
     The ceiling is the firmware's battery-compensated one. The CTBR path (controller_pid's rate loop ->
@@ -206,14 +206,10 @@ def power_distribution(
     arm = L * xp.asarray([1.0, 1.0, 0.0]) + thrust2torque * xp.asarray([0.0, 0.0, 1.0])
     torque_forces = ((torque / arm)[..., None, :] @ mixing_matrix)[..., 0, :]
     requested = (torque_forces + force) / 4
-    rpm = compensated_rotor_vel(
+    return compensated_rotor_vel(
         requested, rpm2thrust=rpm2thrust, thrust_min=thrust_min, vmotor2thrust=vmotor2thrust, v_batt=v_batt,
         pwm_idle=pwm_idle, pwm_max=pwm_max,
     )
-    # Zero collective: the motor force 0 of the shared mixer, as before (at that force rpm2thrust's inverse is its
-    # other zero, ~711 rpm on the cf21B_500 -- no thrust).
-    off = motor_force2rotor_vel(xp.zeros_like(requested), rpm2thrust)
-    return xp.where(force == 0, off, rpm)
 
 
 @dataclass
