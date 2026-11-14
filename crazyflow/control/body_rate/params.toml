@@ -117,6 +117,10 @@ zero_thrust_reset = true
 # The constants are the controller's copies of the drone's identification, duplicated from drones/params.toml for the
 # same reason J is above.
 #
+#   thrust2torque   the torque-to-force constant the rate gains were converted with, so a rate error commands the
+#                   firmware's per-motor force: on cf21B_500 the firmware's own THRUST2TORQUE (platform_defaults_cf21bl.h,
+#                   0.00569), not the plant's 0.00594, with which the converted yaw gains delivered 4 % less yaw force
+#                   than the firmware. The cf2x gains are not firmware ports and keep the model's constant.
 #   vmotor2thrust   the firmware's VMOTOR2THRUST0..3 (platform_defaults_cf2*.h): with battery compensation a motor
 #                   delivers its force request up to vmotor2thrust(v_batt), the thrust at full ratio
 #   v_batt          battery voltage under load. One value: the end of the pack, where the battery rather than
@@ -175,7 +179,7 @@ pwm_max = 65535.0
 
 [cf21B_500.power_distribution]
 L = 0.035355
-thrust2torque = 0.00593893393599368
+thrust2torque = 0.00569278844371417  # the firmware THRUST2TORQUE the yaw gains were converted with (see the header)
 mixing_matrix = [
     [-1.0, -1.0, 1.0, 1.0],
     [-1.0, 1.0, 1.0, -1.0],

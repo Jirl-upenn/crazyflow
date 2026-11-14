@@ -112,7 +112,7 @@ def test_body_rate_pipeline_uses_power_distribution():
 @pytest.mark.parametrize("drone", available_drones)
 def test_matches_shared_mixer_inside_the_motor_range(drone: str):
     """Where every motor asks for a force in [THRUST_MIN, THRUST_MAX] the shared mixer and the power distribution
-    agree."""
+    agree on roll and pitch."""
     from crazyflow.control.mellinger import force_torque2rotor_vel
 
     pd = parametrize(power_distribution, drone)
@@ -123,6 +123,7 @@ def test_matches_shared_mixer_inside_the_motor_range(drone: str):
     # every motor inside [THRUST_MIN, THRUST_MAX] (torques small enough)
     force = rng.uniform(4.0 * (thrust_min + 0.006), 2.0 * thrust_max, (512, 1))
     torque = rng.uniform(-5e-5, 5e-5, (512, 3))
+    torque[:, 2] = 0.0      # the yaw split's constant differs on cf21B_500 (test_yaw_force_per_torque_is_firmware)
     np.testing.assert_allclose(pd(force, torque), ft(force, torque), rtol=1e-6)
 
 
@@ -190,3 +191,15 @@ def test_sim_zero_thrust_idles():
     sim.body_rate_control(np.zeros((1, 1, 4), dtype=np.float32))
     sim.step(1)
     assert float(jnp.min(sim.data.controls.rotor_vel)) > 3000.0
+
+
+@pytest.mark.unit
+def test_yaw_force_per_torque_is_firmware():
+    """A yaw torque splits into +-tau / (4 THRUST2TORQUE_fw) per motor: the constant the yaw gains were converted
+    with (0.00569), so the firmware's per-motor yaw force is reproduced."""
+    tau = 1e-3
+    pd = parametrize(power_distribution, "cf21B_500")
+    rpm = pd(np.array([0.4]), np.array([0.0, 0.0, tau]))
+    k = np.asarray(P["rpm2thrust"])
+    f = k[0] + k[1] * rpm + k[2] * rpm**2
+    np.testing.assert_allclose(np.abs(f - 0.1), tau / (4 * 0.00569278844371417), rtol=1e-5)
