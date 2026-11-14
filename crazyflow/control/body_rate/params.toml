@@ -12,8 +12,8 @@
 # of 250 rad/s per rad/s of error, not an achieved bandwidth -- the mixer saturates long before
 # that, and the closed loop settles in 60-130 ms rather than the ~4 ms the gain alone would imply.
 #
-# There is no torque limit here: as in the Crazyflie firmware, saturation happens only in
-# force_torque2rotor_vel's per-motor force clip. (A direction-preserving torque clamp with conditional
+# There is no torque limit here: as in the Crazyflie firmware, saturation happens only in the power
+# distribution's per-motor limit (power_distribution, sections at the end of this file). (A direction-preserving torque clamp with conditional
 # anti-windup was removed on 4 Oct 2026: it has no firmware counterpart, gave no learning benefit in a
 # 3-seed ablation, and policies trained with it lose half to nearly all of their performance under
 # firmware-style saturation and vice versa.)
@@ -110,3 +110,58 @@ kd = [1.236, 1.104, 0.0]
 int_err_max = [0.5812, 0.5812, 2.9095]
 torque_clip = [7.07e-3, 7.07e-3, 2.28e-3]
 zero_thrust_reset = true
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Power distribution (power_distribution in control.py): the body-rate controller's own mixer.
+#
+# The constants are the controller's copies of the drone's identification, duplicated from drones/params.toml for the
+# same reason J is above.
+# ---------------------------------------------------------------------------------------------------------------------
+
+[cf2x_L250.power_distribution]
+L = 0.03253
+thrust2torque = 0.007350862856566459
+mixing_matrix = [
+    [-1.0, -1.0, 1.0, 1.0],
+    [-1.0, 1.0, 1.0, -1.0],
+    [-1.0, 1.0, -1.0, 1.0]
+]
+rpm2thrust = [0.0, -5.382196214637237e-07, 2.4582929831265485e-10]
+thrust_min = 0.012817578393224994
+thrust_max = 0.12
+
+[cf2x_P250.power_distribution]
+L = 0.03253
+thrust2torque = 0.0069928948992470565
+mixing_matrix = [
+    [-1.0, -1.0, 1.0, 1.0],
+    [-1.0, 1.0, 1.0, -1.0],
+    [-1.0, 1.0, -1.0, 1.0]
+]
+rpm2thrust = [0.0, -3.6200226530383495e-07, 1.6060924304100328e-10]
+thrust_min = 0.012817578393224994
+thrust_max = 0.12
+
+[cf2x_T350.power_distribution]
+L = 0.03253
+thrust2torque = 0.005355990836477486
+mixing_matrix = [
+    [-1.0, -1.0, 1.0, 1.0],
+    [-1.0, 1.0, 1.0, -1.0],
+    [-1.0, 1.0, -1.0, 1.0]
+]
+rpm2thrust = [0.0, -7.167227176573658e-07, 2.9401303690194613e-10]
+thrust_min = 0.01922636758983749
+thrust_max = 0.18
+
+[cf21B_500.power_distribution]
+L = 0.035355
+thrust2torque = 0.00593893393599368
+mixing_matrix = [
+    [-1.0, -1.0, 1.0, 1.0],
+    [-1.0, 1.0, 1.0, -1.0],
+    [-1.0, 1.0, -1.0, 1.0]
+]
+rpm2thrust = [0.0, -3.133427287299859e-07, 4.407354891648379e-10]
+thrust_min = 0.02136263065537499
+thrust_max = 0.2

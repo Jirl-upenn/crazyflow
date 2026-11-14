@@ -16,7 +16,7 @@ from jax import Array, Device
 
 import crazyflow.sim.functional as F
 from crazyflow.control import Control
-from crazyflow.control.body_rate import control_body_rate2force_torque
+from crazyflow.control.body_rate import control_body_rate2force_torque, control_power_distribution
 from crazyflow.control.mellinger import (
     control_attitude2force_torque,
     control_commit_attitude,
@@ -588,6 +588,9 @@ def build_control_fns(
     attitude = ("attitude_controller", attitude_fn)
     body_rate = ("body_rate_controller", control_body_rate2force_torque)
     force_torque = ("force_torque_controller", control_force_torque2rotor_vel)
+    # CTBR's mixer is its own power distribution (body_rate.power_distribution), not the shared one; it keeps
+    # the force-torque stage's name and clock.
+    power_distribution = ("force_torque_controller", control_power_distribution)
     commit_attitude = ("commit_attitude", control_commit_attitude)
     match control:
         case Control.state:
@@ -602,7 +605,7 @@ def build_control_fns(
             else:
                 raise NotImplementedError(f"Control mode {control} not implemented for {dynamics}")
         case Control.body_rate:
-            stages = (body_rate, force_torque)
+            stages = (body_rate, power_distribution)
         case Control.force_torque:
             stages = (force_torque,)
         case Control.rotor_vel:

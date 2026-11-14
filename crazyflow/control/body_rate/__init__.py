@@ -8,6 +8,14 @@ from crazyflow.control.body_rate.control import (
     BodyRateData,
     body_rate2force_torque,
     control_body_rate2force_torque,
+    control_power_distribution,
+    power_distribution,
 )
 
-__all__ = ["body_rate2force_torque", "BodyRateData", "control_body_rate2force_torque"]
+__all__ = [
+    "body_rate2force_torque",
+    "BodyRateData",
+    "control_body_rate2force_torque",
+    "control_power_distribution",
+    "power_distribution",
+]

@@ -1,12 +1,13 @@
 """Collective-thrust body-rate (CTBR) controller.
 
 A single-stage PID rate controller that turns a body-rate setpoint plus a collective thrust into
-the force and torque expected by
-[force_torque2rotor_vel][crazyflow.control.mellinger.force_torque2rotor_vel]. It is a sibling of
-the Mellinger attitude stage rather than a replacement: both consume a setpoint and emit
-force/torque, so the mixer stage below them is shared.
+a force and torque, and the power distribution that turns those into rotor speeds. The rate stage
+is a sibling of the Mellinger attitude stage; the mixer below it is its own (``power_distribution``)
+rather than the shared
+[force_torque2rotor_vel][crazyflow.control.mellinger.force_torque2rotor_vel], so that it can follow
+the Crazyflie firmware's CTBR path without changing the Mellinger and Lee stages.
 
-``body_rate2force_torque`` → ``force_torque2rotor_vel``
+``body_rate2force_torque`` → ``power_distribution``
 
 Unlike the Mellinger controller, this controller is not a reimplementation of anything running on
 the Crazyflie firmware. It works entirely in SI units, and its gains are expressed as angular
@@ -28,7 +29,8 @@ from array_api_compat import device as xp_device
 from flax.struct import dataclass, field
 
 from crazyflow.control.core import controllable, load_params
-from crazyflow.utils import leaf_replace, to_xp
+from crazyflow.control.transform import motor_force2rotor_vel
+from crazyflow.utils import filter_to_signature, leaf_replace, to_xp
 
 if TYPE_CHECKING:
     from jax import Device
@@ -63,10 +65,9 @@ def body_rate2force_torque(
 
     Note:
         The commanded collective thrust and the torque are passed on unclipped. Saturation happens
-        one stage later, in
-        [force_torque2rotor_vel][crazyflow.control.mellinger.force_torque2rotor_vel], which clips
-        the individual motor forces -- as the Crazyflie firmware does, whose rate PIDs only
-        saturate their outputs to the int16 range before power distribution clips the motors.
+        one stage later, in [power_distribution][crazyflow.control.body_rate.power_distribution],
+        which limits the individual motors -- as the Crazyflie firmware does, whose rate PIDs only
+        saturate their outputs to the int16 range before power distribution caps the motors.
         The only windup bound is `int_err_max`, again as in the firmware.
 
     Warning:
@@ -143,6 +144,51 @@ def body_rate2force_torque(
     return force_des[..., None], torque, ang_vel_err_i
 
 
+def power_distribution(
+    force: Array,
+    torque: Array,
+    *,
+    L: float,
+    thrust2torque: float,
+    mixing_matrix: Array,
+    rpm2thrust: Array,
+    thrust_min: float,
+    thrust_max: float,
+) -> Array:
+    """Collective thrust and body torque -> rotor speeds: the body-rate controller's power distribution.
+
+    The X-configuration split of the force and torque into per-motor forces, each clipped to
+    ``[thrust_min, thrust_max]`` (a zero collective stops the motors), then the rotor speed at which ``rpm2thrust``
+    gives that force. This is the same mixer as
+    [force_torque2rotor_vel][crazyflow.control.mellinger.force_torque2rotor_vel]; it is a separate stage so the
+    CTBR path can follow the firmware's power distribution on its own.
+
+    Warning:
+        This function assumes an X rotor configuration.
+
+    Args:
+        force: Collective thrust in N with shape (..., 1).
+        torque: Body torque in Nm with shape (..., 3).
+        L: Arm length (centre to rotor) in m.
+        thrust2torque: Yaw torque per unit motor force in m.
+        mixing_matrix: Mixing matrix for the motor forces with shape (3, 4).
+        rpm2thrust: Thrust curve (N, N/RPM, N/RPM**2).
+        thrust_min: Minimum motor force in N.
+        thrust_max: Maximum motor force in N.
+
+    Returns:
+        The rotor speeds in RPM with shape (..., 4).
+    """
+    xp = array_namespace(torque)
+    assert torque.shape[-1] == 3, f"Torque must have shape (..., 3), but has {torque.shape}"
+    assert force.shape[-1] == 1, f"Force must have shape (..., 1), but has {force.shape}"
+    arm = L * xp.asarray([1.0, 1.0, 0.0]) + thrust2torque * xp.asarray([0.0, 0.0, 1.0])
+    torque_forces = ((torque / arm)[..., None, :] @ mixing_matrix)[..., 0, :]
+    motor_forces = (torque_forces + force) / 4
+    motor_forces = xp.where(force == 0, 0.0, xp.clip(motor_forces, thrust_min, thrust_max))
+    return motor_force2rotor_vel(motor_forces, rpm2thrust)
+
+
 @dataclass
 class BodyRateData:
     cmd: Array  # (N, M, 4)
@@ -160,7 +206,8 @@ class BodyRateData:
     """Integral error of the body-rate controller."""
     last_ang_vel: Array  # (N, M, 3)
     """Last angular velocity of the drone."""
-    # Parameters for the body-rate controller
+    # Parameters for the body-rate controller and its power distribution (one dict, so the drone overrides
+    # reach both: crazyflow_interface writes identification overrides into every stage's params)
     params: dict[str, Array]
 
     @staticmethod
@@ -171,7 +218,9 @@ class BodyRateData:
         cmd = jnp.zeros((n_worlds, n_drones, 4), device=device)
         steps = -jnp.ones((n_worlds, 1), dtype=jnp.int32, device=device)
         zeros_3d = jnp.zeros((n_worlds, n_drones, 3), device=device)
-        params = load_params(body_rate2force_torque, drone, xp=jnp, device=device)
+        params = load_params(body_rate2force_torque, drone, xp=jnp, device=device) | load_params(
+            power_distribution, drone, xp=jnp, device=device
+        )
         return BodyRateData(
             cmd=cmd,
             staged_cmd=cmd,
@@ -196,7 +245,7 @@ def control_body_rate2force_torque(data: SimData) -> SimData:
         ang_vel_err_i=body_rate_ctrl.ang_vel_err_i,
         prev_ang_vel=body_rate_ctrl.last_ang_vel,
         ctrl_freq=body_rate_ctrl.freq,
-        **body_rate_ctrl.params,
+        **filter_to_signature(body_rate_ctrl.params, body_rate2force_torque),
     )
     body_rate_ctrl = leaf_replace(
         body_rate_ctrl,
@@ -211,3 +260,25 @@ def control_body_rate2force_torque(data: SimData) -> SimData:
     return data.replace(
         controls=data.controls.replace(body_rate=body_rate_ctrl, force_torque=ft_ctrl)
     )
+
+
+def control_power_distribution(data: SimData) -> SimData:
+    """Compute the rotor speeds for the body-rate controller's force and torque (its power distribution).
+
+    Runs on the force-torque stage's command and clock, like
+    [control_force_torque2rotor_vel][crazyflow.control.mellinger.control_force_torque2rotor_vel], with the
+    body-rate controller's own power distribution in place of the shared mixer.
+    """
+    ft_ctrl = data.controls.force_torque
+    assert ft_ctrl is not None, "Using power distribution without initialized force torque data"
+    body_rate_ctrl: BodyRateData = data.controls.body_rate
+    assert body_rate_ctrl is not None, "Using power distribution without initialized body-rate data"
+    mask = controllable(data.core.steps, data.core.freq, ft_ctrl.steps, ft_ctrl.freq)
+    ft_ctrl = leaf_replace(ft_ctrl, mask, cmd=ft_ctrl.staged_cmd)
+    rotor_vel = power_distribution(
+        ft_ctrl.cmd[..., [0]],
+        ft_ctrl.cmd[..., 1:],
+        **filter_to_signature(body_rate_ctrl.params, power_distribution),
+    )
+    ft_ctrl = leaf_replace(ft_ctrl, mask, steps=data.core.steps)
+    return data.replace(controls=data.controls.replace(rotor_vel=rotor_vel, force_torque=ft_ctrl))
