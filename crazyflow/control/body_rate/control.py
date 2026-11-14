@@ -7,7 +7,10 @@ rather than the shared
 [force_torque2rotor_vel][crazyflow.control.mellinger.force_torque2rotor_vel], so that it can follow
 the Crazyflie firmware's CTBR path without changing the Mellinger and Lee stages.
 
-``body_rate2force_torque`` → ``power_distribution``
+``gyro_lpf2p`` → ``body_rate2force_torque`` → ``power_distribution``
+
+``gyro_lpf2p`` is the firmware's gyro low-pass on the rate the PID reads (drones whose section sets
+``gyro_lpf_hz``; without it the PID reads the true body rate).
 
 Unlike the Mellinger controller, this controller is not a reimplementation of anything running on
 the Crazyflie firmware. It works entirely in SI units, and its gains are expressed as angular
@@ -21,6 +24,7 @@ setpoint is far easier to learn than a torque and far more transferable than a m
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
@@ -37,6 +41,47 @@ if TYPE_CHECKING:
 
     from crazyflow._typing import Array  # To be changed to array_api_typing later
     from crazyflow.sim.data import SimData
+
+
+def gyro_lpf2p(
+    ang_vel: Array,
+    d1: Array,
+    d2: Array,
+    sample_freq: float,
+    *,
+    gyro_lpf_hz: Array | None = None,
+) -> tuple[Array, Array, Array]:
+    """Low-pass the measured body rate as the Crazyflie firmware does before its rate PID reads it.
+
+    The firmware filters every gyro sample with ``lpf2p`` (crazyflie-firmware src/utils/src/filter.c), a
+    2nd-order Butterworth low-pass from the bilinear transform with frequency prewarping, at
+    ``GYRO_LPF_CUTOFF_FREQ`` = 80 Hz (sensors_bmi088_bmp3xx.c); the rate PID's P and D terms both read the
+    filtered rate. The firmware samples the gyro at 1 kHz; here the filter runs once per sim step at
+    ``sample_freq``, with the coefficients designed for that rate (at 80 Hz the 500 Hz and 1 kHz filters
+    delay the rate by 2.6 and 2.75 ms and the closed rate loops differ by under 1 %).
+
+    Args:
+        ang_vel: Measured body rate, shape (..., 3).
+        d1: The filter's first delay element, shape (..., 3).
+        d2: The filter's second delay element, shape (..., 3).
+        sample_freq: The rate the filter is applied at, Hz.
+        gyro_lpf_hz: Cutoff frequency, Hz. None: no filter (the rate passes through, the state is unchanged).
+
+    Returns:
+        The filtered rate and the new delay elements (d1, d2).
+    """
+    if gyro_lpf_hz is None:
+        return ang_vel, d1, d2
+    xp = array_namespace(ang_vel)
+    ohm = xp.tan(math.pi * gyro_lpf_hz / sample_freq)
+    k = 2.0 * math.cos(math.pi / 4.0) * ohm
+    c = 1.0 + k + ohm * ohm
+    b0 = ohm * ohm / c
+    a1 = 2.0 * (ohm * ohm - 1.0) / c
+    a2 = (1.0 - k + ohm * ohm) / c
+    d0 = ang_vel - d1 * a1 - d2 * a2
+    d0 = xp.where(xp.isfinite(d0), d0, ang_vel)  # filter.c: a bad value does not propagate through the filter
+    return b0 * (d0 + 2.0 * d1 + d2), d0, d1
 
 
 def body_rate2force_torque(
@@ -230,7 +275,11 @@ class BodyRateData:
     ang_vel_err_i: Array  # (N, M, 3)
     """Integral error of the body-rate controller."""
     last_ang_vel: Array  # (N, M, 3)
-    """Last angular velocity of the drone."""
+    """Last (filtered) angular velocity the rate PID read."""
+    gyro_d1: Array  # (N, M, 3)
+    """First delay element of the gyro low-pass (gyro_lpf2p)."""
+    gyro_d2: Array  # (N, M, 3)
+    """Second delay element of the gyro low-pass."""
     # Parameters for the body-rate controller and its power distribution (one dict, so the drone overrides
     # reach both: crazyflow_interface writes identification overrides into every stage's params)
     params: dict[str, Array]
@@ -243,8 +292,10 @@ class BodyRateData:
         cmd = jnp.zeros((n_worlds, n_drones, 4), device=device)
         steps = -jnp.ones((n_worlds, 1), dtype=jnp.int32, device=device)
         zeros_3d = jnp.zeros((n_worlds, n_drones, 3), device=device)
-        params = load_params(body_rate2force_torque, drone, xp=jnp, device=device) | load_params(
-            power_distribution, drone, xp=jnp, device=device
+        params = (
+            load_params(gyro_lpf2p, drone, xp=jnp, device=device)
+            | load_params(body_rate2force_torque, drone, xp=jnp, device=device)
+            | load_params(power_distribution, drone, xp=jnp, device=device)
         )
         return BodyRateData(
             cmd=cmd,
@@ -253,6 +304,8 @@ class BodyRateData:
             freq=freq,
             ang_vel_err_i=zeros_3d,
             last_ang_vel=zeros_3d,
+            gyro_d1=zeros_3d,
+            gyro_d2=zeros_3d,
             params=params,
         )
 
@@ -264,8 +317,17 @@ def control_body_rate2force_torque(data: SimData) -> SimData:
     assert body_rate_ctrl is not None, "Using body rate controller without initialized data"
     mask = controllable(data.core.steps, data.core.freq, body_rate_ctrl.steps, body_rate_ctrl.freq)
     body_rate_ctrl = leaf_replace(body_rate_ctrl, mask, cmd=body_rate_ctrl.staged_cmd)
-    force, torque, ang_vel_err_i = body_rate2force_torque(
+    # The gyro filter runs every sim step (the firmware filters every IMU sample), the PID only on its ticks
+    ang_vel, gyro_d1, gyro_d2 = gyro_lpf2p(
         states.ang_vel,
+        body_rate_ctrl.gyro_d1,
+        body_rate_ctrl.gyro_d2,
+        float(data.core.freq),
+        **filter_to_signature(body_rate_ctrl.params, gyro_lpf2p),
+    )
+    body_rate_ctrl = body_rate_ctrl.replace(gyro_d1=gyro_d1, gyro_d2=gyro_d2)
+    force, torque, ang_vel_err_i = body_rate2force_torque(
+        ang_vel,
         body_rate_ctrl.cmd,
         ang_vel_err_i=body_rate_ctrl.ang_vel_err_i,
         prev_ang_vel=body_rate_ctrl.last_ang_vel,
@@ -276,7 +338,7 @@ def control_body_rate2force_torque(data: SimData) -> SimData:
         body_rate_ctrl,
         mask,
         ang_vel_err_i=ang_vel_err_i,
-        last_ang_vel=states.ang_vel,
+        last_ang_vel=ang_vel,
         steps=data.core.steps,
     )
     ft_ctrl = leaf_replace(

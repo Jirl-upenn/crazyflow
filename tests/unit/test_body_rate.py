@@ -180,3 +180,76 @@ def test_jit_and_grad():
     grad = jax.jit(jax.grad(cost))(jnp.array([0.1, 0.1, 0.1, 0.4]))
     assert not jnp.any(jnp.isnan(grad)), "NaN gradient"
     assert jnp.any(grad != 0), "Gradient vanished away from any saturation bound"
+
+
+def _lpf2p_firmware(samples: np.ndarray, sample_freq: float, cutoff_freq: float) -> np.ndarray:
+    """crazyflie-firmware src/utils/src/filter.c lpf2pSetCutoffFreq + lpf2pApply, transcribed line by line."""
+    fr = sample_freq / cutoff_freq
+    ohm = np.tan(np.pi / fr)
+    c = 1.0 + 2.0 * np.cos(np.pi / 4.0) * ohm + ohm * ohm
+    b0 = ohm * ohm / c
+    b1 = 2.0 * b0
+    b2 = b0
+    a1 = 2.0 * (ohm * ohm - 1.0) / c
+    a2 = (1.0 - 2.0 * np.cos(np.pi / 4.0) * ohm + ohm * ohm) / c
+    de1 = de2 = 0.0
+    out = []
+    for sample in samples:
+        de0 = sample - de1 * a1 - de2 * a2
+        if not np.isfinite(de0):
+            de0 = sample
+        out.append(de0 * b0 + de1 * b1 + de2 * b2)
+        de2 = de1
+        de1 = de0
+    return np.array(out)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sample_freq", [500.0, 1000.0])
+def test_gyro_lpf2p_matches_firmware(sample_freq: float):
+    """gyro_lpf2p is the firmware's lpf2p, sample by sample, per axis."""
+    from crazyflow.control.body_rate import gyro_lpf2p
+
+    rng = np.random.default_rng(0)
+    w = rng.normal(size=(400, 3)) + np.sin(np.arange(400) / 20.0)[:, None]
+    d1 = d2 = np.zeros(3)
+    out = []
+    for x in w:
+        y, d1, d2 = gyro_lpf2p(x, d1, d2, sample_freq, gyro_lpf_hz=np.asarray(80.0))
+        out.append(y)
+    ref = np.stack([_lpf2p_firmware(w[:, i], sample_freq, 80.0) for i in range(3)], -1)
+    assert np.allclose(np.stack(out), ref, atol=1e-12), "gyro_lpf2p differs from filter.c"
+
+
+@pytest.mark.unit
+def test_gyro_lpf2p_off_and_params():
+    """No cutoff passes the rate through; only the cf21B_500 (the firmware port) filters, at 80 Hz."""
+    from crazyflow.control.body_rate import gyro_lpf2p
+    from crazyflow.control.core import load_params
+
+    w, d = np.array([1.0, -2.0, 3.0]), np.array([0.5, 0.5, 0.5])
+    y, d1, d2 = gyro_lpf2p(w, d, 2 * d, 500.0)
+    assert np.array_equal(y, w) and np.array_equal(d1, d) and np.array_equal(d2, 2 * d)
+    for drone in available_drones:
+        params = load_params(gyro_lpf2p, drone)
+        if drone == "cf21B_500":
+            assert float(params["gyro_lpf_hz"]) == 80.0
+        else:
+            assert "gyro_lpf_hz" not in params, f"{drone} is not a firmware port and reads the true rate"
+
+
+@pytest.mark.unit
+def test_rate_pid_reads_filtered_rate():
+    """In the sim the PID's last rate is the filtered one: after a rate step it lags the true rate."""
+    sim = Sim(n_worlds=1, n_drones=1, drone="cf21B_500", control=Control.body_rate, freq=500)
+    sim.reset()
+    cmd = settled_hover(sim)
+    cmd[0, 0, 0] = RATE_CMD[0]
+    for _ in range(10):
+        sim.body_rate_control(cmd)
+        sim.step(1)
+    true_rate = float(sim.data.states.ang_vel[0, 0, 0])
+    seen = float(sim.data.controls.body_rate.last_ang_vel[0, 0, 0])
+    assert 0.0 < seen < true_rate, f"filtered rate {seen} should trail the rising true rate {true_rate}"
+    sim.reset()
+    assert np.all(np.asarray(sim.data.controls.body_rate.gyro_d1) == 0.0), "reset must clear the filter state"

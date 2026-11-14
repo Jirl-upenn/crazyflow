@@ -9,6 +9,7 @@ from crazyflow.control.body_rate.control import (
     body_rate2force_torque,
     control_body_rate2force_torque,
     control_power_distribution,
+    gyro_lpf2p,
     power_distribution,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "BodyRateData",
     "control_body_rate2force_torque",
     "control_power_distribution",
+    "gyro_lpf2p",
     "power_distribution",
 ]
